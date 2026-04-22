@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.5/phpunit.xsd"
-         bootstrap="vendor/autoload.php"
+         bootstrap="tests/bootstrap.php"
          colors="true"
          cacheResult="false"
          convertDeprecationsToExceptions="true"
@@ -11,6 +11,8 @@
         <testsuite name="unit">
             <directory>tests/Archive</directory>
             <directory>tests/SearchReplace</directory>
+            <directory>tests/Plugin</directory>
+            <directory>tests/Upload</directory>
         </testsuite>
     </testsuites>
     <coverage>
