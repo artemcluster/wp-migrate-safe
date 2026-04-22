@@ -31,6 +31,7 @@ if (file_exists(__DIR__ . '/vendor/autoload.php')) {
 use WpMigrateSafe\Plugin\Bootstrap;
 
 add_action('plugins_loaded', static function (): void {
+    load_plugin_textdomain('wp-migrate-safe', false, dirname(plugin_basename(__FILE__)) . '/languages');
     Bootstrap::instance()->boot();
 });
 
