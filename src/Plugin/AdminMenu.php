@@ -51,6 +51,13 @@ final class AdminMenu
             WPMS_VERSION,
             true
         );
+        wp_enqueue_script(
+            'wpms-export',
+            WPMS_URL . 'assets/js/export.js',
+            ['wpms-admin'],
+            WPMS_VERSION,
+            true
+        );
         wp_localize_script('wpms-upload', 'WPMS', [
             'restUrl' => rest_url(WPMS_REST_NAMESPACE . '/'),
             'nonce' => wp_create_nonce('wp_rest'),
