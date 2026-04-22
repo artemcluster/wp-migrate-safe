@@ -97,6 +97,10 @@ final class AppendingWriter
 
     public function finalize(): void
     {
+        // Invalidate PHP's stat cache — earlier appendFile calls modified the file
+        // via a different handle, but filesize() may still return the cached size.
+        clearstatcache(true, $this->archivePath);
+
         $archiveSize = filesize($this->archivePath);
         if ($archiveSize === false) {
             throw new NotWritableException('Cannot stat archive: ' . $this->archivePath);
@@ -114,6 +118,8 @@ final class AppendingWriter
         } finally {
             fclose($dest);
         }
+
+        clearstatcache(true, $this->archivePath);
     }
 
     /** @param resource $handle */

@@ -124,6 +124,10 @@ final class Writer
             throw new NotWritableException('Short write while appending EOF block.');
         }
 
+        // PHP caches stat results per request; without this, filesize() called
+        // right after close() can return the stale pre-EOF size on PHP < 8.3.
+        clearstatcache(true, $this->archivePath);
+
         $this->closed = true;
     }
 
