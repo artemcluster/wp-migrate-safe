@@ -10,6 +10,7 @@
     <testsuites>
         <testsuite name="unit">
             <directory>tests/Archive</directory>
+            <directory>tests/SearchReplace</directory>
         </testsuite>
     </testsuites>
     <coverage>
