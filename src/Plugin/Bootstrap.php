@@ -25,27 +25,32 @@ final class Bootstrap
 
     public function boot(): void
     {
-        if ($this->booted) {
-            return;
-        }
+        if ($this->booted) return;
         $this->booted = true;
 
         add_action('rest_api_init', [RestRouter::class, 'registerRoutes']);
         add_action('admin_menu', [AdminMenu::class, 'register']);
         add_action('admin_enqueue_scripts', [AdminMenu::class, 'enqueueAssets']);
+
+        \WpMigrateSafe\Cron\Cleanup::registerHook();
+
+        if (defined('WP_CLI') && WP_CLI) {
+            \WP_CLI::add_command('migrate-safe', \WpMigrateSafe\Cli\Wpms_Cli_Command::class);
+        }
     }
 
     public function onActivate(): void
     {
-        // Ensure directories exist immediately so web-accessible .htaccess is in place.
         Paths::backupsDir();
         Paths::uploadsTmpDir();
         Paths::jobsDir();
         Paths::rollbackDir();
+
+        \WpMigrateSafe\Cron\Cleanup::schedule();
     }
 
     public function onDeactivate(): void
     {
-        // Intentionally leave backups in place — they are user data.
+        \WpMigrateSafe\Cron\Cleanup::unschedule();
     }
 }
