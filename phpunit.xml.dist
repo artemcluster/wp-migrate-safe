@@ -13,6 +13,8 @@
             <directory>tests/SearchReplace</directory>
             <directory>tests/Plugin</directory>
             <directory>tests/Upload</directory>
+            <directory>tests/Job</directory>
+            <directory>tests/Export</directory>
         </testsuite>
     </testsuites>
     <coverage>
