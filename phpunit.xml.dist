@@ -15,8 +15,14 @@
             <directory>tests/Upload</directory>
             <directory>tests/Job</directory>
             <directory>tests/Export</directory>
+            <directory>tests/Import</directory>
+            <directory>tests/Rollback</directory>
             <exclude>tests/Export/Database/DatabaseDumperTest.php</exclude>
             <exclude>tests/Export/ExportJobTest.php</exclude>
+            <exclude>tests/Import/Snapshot/SnapshotCreatorTest.php</exclude>
+            <exclude>tests/Rollback/RollbackExecutorTest.php</exclude>
+            <exclude>tests/Import/ImportJobTest.php</exclude>
+            <exclude>tests/Import/RollbackTest.php</exclude>
         </testsuite>
     </testsuites>
     <coverage>
