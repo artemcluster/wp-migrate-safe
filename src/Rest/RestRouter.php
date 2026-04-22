@@ -97,6 +97,42 @@ final class RestRouter
             'permission_callback' => [self::class, 'checkPermission'],
             'args' => ['job_id' => ['type' => 'string', 'required' => true]],
         ]);
+
+        $import = new ImportController();
+
+        register_rest_route($ns, '/import/start', [
+            'methods'             => 'POST',
+            'callback'            => [$import, 'start'],
+            'permission_callback' => [self::class, 'checkPermission'],
+            'args'                => [
+                'filename'      => ['type' => 'string', 'required' => true],
+                'source_prefix' => ['type' => 'string', 'required' => false],
+                'target_prefix' => ['type' => 'string', 'required' => false],
+                'source_url'    => ['type' => 'string', 'required' => false],
+                'target_url'    => ['type' => 'string', 'required' => false],
+            ],
+        ]);
+
+        register_rest_route($ns, '/import/step', [
+            'methods'             => 'POST',
+            'callback'            => [$import, 'step'],
+            'permission_callback' => [self::class, 'checkPermission'],
+            'args'                => ['job_id' => ['type' => 'string', 'required' => true]],
+        ]);
+
+        register_rest_route($ns, '/import/status', [
+            'methods'             => 'GET',
+            'callback'            => [$import, 'status'],
+            'permission_callback' => [self::class, 'checkPermission'],
+            'args'                => ['job_id' => ['type' => 'string', 'required' => true]],
+        ]);
+
+        register_rest_route($ns, '/import/abort', [
+            'methods'             => 'POST',
+            'callback'            => [$import, 'abort'],
+            'permission_callback' => [self::class, 'checkPermission'],
+            'args'                => ['job_id' => ['type' => 'string', 'required' => true]],
+        ]);
     }
 
     public static function checkPermission(): bool
