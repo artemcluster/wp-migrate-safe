@@ -4,6 +4,7 @@ if (!defined('ABSPATH')) { exit; }
 
 $tabs = [
     'upload'  => __('Upload', 'wp-migrate-safe'),
+    'import'  => __('Import', 'wp-migrate-safe'),
     'export'  => __('Export', 'wp-migrate-safe'),
     'backups' => __('Backups', 'wp-migrate-safe'),
 ];
