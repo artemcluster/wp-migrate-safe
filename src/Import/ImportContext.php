@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace WpMigrateSafe\Import;
 
+use WpMigrateSafe\Import\Snapshot\SnapshotStore;
+
 /**
  * Context shared across import steps within a single HTTP request.
  *
@@ -13,51 +15,34 @@ final class ImportContext
     private string $archivePath;
     private string $wpRoot;
     private string $wpContentDir;
-    private string $rollbackDir;
     private string $extractDir;
-    private string $sourcePrefix;
-    private string $targetPrefix;
-    private string $sourceUrl;
-    private string $targetUrl;
-    /** @var array<string, mixed> */
-    private array $options;
+    private string $oldUrl;
+    private string $newUrl;
+    private SnapshotStore $snapshotStore;
 
-    /**
-     * @param array<string, mixed> $options
-     */
     public function __construct(
         string $archivePath,
         string $wpRoot,
         string $wpContentDir,
-        string $rollbackDir,
         string $extractDir,
-        string $sourcePrefix,
-        string $targetPrefix,
-        string $sourceUrl,
-        string $targetUrl,
-        array $options = []
+        string $oldUrl,
+        string $newUrl,
+        SnapshotStore $snapshotStore
     ) {
-        $this->archivePath   = $archivePath;
-        $this->wpRoot        = rtrim($wpRoot, '/\\');
-        $this->wpContentDir  = rtrim($wpContentDir, '/\\');
-        $this->rollbackDir   = rtrim($rollbackDir, '/\\');
-        $this->extractDir    = rtrim($extractDir, '/\\');
-        $this->sourcePrefix  = $sourcePrefix;
-        $this->targetPrefix  = $targetPrefix;
-        $this->sourceUrl     = rtrim($sourceUrl, '/');
-        $this->targetUrl     = rtrim($targetUrl, '/');
-        $this->options       = $options;
+        $this->archivePath = $archivePath;
+        $this->wpRoot = rtrim($wpRoot, '/\\');
+        $this->wpContentDir = rtrim($wpContentDir, '/\\');
+        $this->extractDir = rtrim($extractDir, '/\\');
+        $this->oldUrl = $oldUrl;
+        $this->newUrl = $newUrl;
+        $this->snapshotStore = $snapshotStore;
     }
 
     public function archivePath(): string { return $this->archivePath; }
     public function wpRoot(): string { return $this->wpRoot; }
     public function wpContentDir(): string { return $this->wpContentDir; }
-    public function rollbackDir(): string { return $this->rollbackDir; }
     public function extractDir(): string { return $this->extractDir; }
-    public function sourcePrefix(): string { return $this->sourcePrefix; }
-    public function targetPrefix(): string { return $this->targetPrefix; }
-    public function sourceUrl(): string { return $this->sourceUrl; }
-    public function targetUrl(): string { return $this->targetUrl; }
-    /** @return array<string, mixed> */
-    public function options(): array { return $this->options; }
+    public function oldUrl(): string { return $this->oldUrl; }
+    public function newUrl(): string { return $this->newUrl; }
+    public function snapshotStore(): SnapshotStore { return $this->snapshotStore; }
 }

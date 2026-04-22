@@ -4,16 +4,14 @@ declare(strict_types=1);
 namespace WpMigrateSafe\Rollback;
 
 use WpMigrateSafe\Import\Snapshot\Snapshot;
+use WpMigrateSafe\Rollback\Exception\RollbackFailedException;
 
 /**
- * Restores a WordPress site to its pre-import state using a Snapshot.
+ * Restore a snapshot: replay DB dump, restore content directories.
  *
- * Strategy:
- *  1. Re-import the SQL dump (DROP+CREATE+INSERT).
- *  2. Remove any directories that were freshly extracted by the import.
- *  3. Report success or throw RollbackFailedException on any failure.
- *
- * This class requires a live WordPress + MySQL environment (WP-integration test).
+ * Rollback is atomic-best-effort. Each substep is attempted; failures are collected
+ * and reported. If any step fails, RollbackFailedException is thrown with
+ * user-facing manual recovery instructions.
  */
 final class RollbackExecutor
 {
@@ -24,88 +22,124 @@ final class RollbackExecutor
         $this->wpContentDir = rtrim($wpContentDir, '/\\');
     }
 
-    /**
-     * Execute full rollback from snapshot.
-     *
-     * @throws RollbackFailedException
-     */
-    public function rollback(Snapshot $snapshot): void
+    public function execute(Snapshot $snapshot): void
     {
-        $failedSteps = [];
+        $errors = [];
 
-        // Step 1: restore database.
+        // 1. Restore DB from dump.
         try {
-            $this->restoreDatabase($snapshot->sqlDumpPath());
+            $this->restoreDatabase($snapshot->dbDumpPath());
         } catch (\Throwable $e) {
-            $failedSteps[] = 'restore_database: ' . $e->getMessage();
+            $errors[] = 'Database restore failed: ' . $e->getMessage();
         }
 
-        // Step 2: restore content directories (best-effort removal of new content).
+        // 2. Restore plugins dir.
         try {
-            $this->restoreContentDirectories($snapshot->contentPaths());
+            $this->restoreDirectory($snapshot->pluginsRollbackPath(), $this->wpContentDir . '/plugins');
         } catch (\Throwable $e) {
-            $failedSteps[] = 'restore_content: ' . $e->getMessage();
+            $errors[] = 'Plugins restore failed: ' . $e->getMessage();
         }
 
-        if (!empty($failedSteps)) {
+        // 3. Restore themes dir.
+        try {
+            $this->restoreDirectory($snapshot->themesRollbackPath(), $this->wpContentDir . '/themes');
+        } catch (\Throwable $e) {
+            $errors[] = 'Themes restore failed: ' . $e->getMessage();
+        }
+
+        // 4. Restore uploads dir.
+        try {
+            $this->restoreDirectory($snapshot->uploadsRollbackPath(), $this->wpContentDir . '/uploads');
+        } catch (\Throwable $e) {
+            $errors[] = 'Uploads restore failed: ' . $e->getMessage();
+        }
+
+        if (!empty($errors)) {
             throw new RollbackFailedException(
-                'Rollback failed on ' . count($failedSteps) . ' step(s). Manual intervention required.',
-                $failedSteps
+                'Rollback could not be completed: ' . implode('; ', $errors),
+                $this->buildManualRecoverySteps($snapshot, $errors)
             );
         }
     }
 
     private function restoreDatabase(string $dumpPath): void
     {
+        if (!is_file($dumpPath)) {
+            throw new \RuntimeException('DB dump not found: ' . $dumpPath);
+        }
+
         global $wpdb;
 
-        if (!is_file($dumpPath)) {
-            throw new \RuntimeException('SQL dump file not found: ' . $dumpPath);
+        // Drop all current tables with wpdb prefix (post-import state).
+        $prefix = $wpdb->prefix;
+        $like = str_replace('_', '\_', $prefix) . '%';
+        $tables = $wpdb->get_col($wpdb->prepare('SHOW TABLES LIKE %s', $like));
+        foreach ((array) $tables as $table) {
+            $wpdb->query("DROP TABLE IF EXISTS `$table`");
         }
 
-        $sql = file_get_contents($dumpPath);
-        if ($sql === false) {
-            throw new \RuntimeException('Could not read SQL dump: ' . $dumpPath);
+        // Replay dump.
+        $handle = fopen($dumpPath, 'rb');
+        if ($handle === false) {
+            throw new \RuntimeException('Could not open DB dump: ' . $dumpPath);
         }
 
-        // Split on statement boundaries (semicolon at end of line).
-        $statements = preg_split('/;\s*\n/', $sql);
-        if ($statements === false) {
-            throw new \RuntimeException('Could not parse SQL dump.');
-        }
-
-        foreach ($statements as $statement) {
-            $statement = trim($statement);
-            if ($statement === '' || strpos($statement, '--') === 0) {
-                continue;
+        try {
+            $statement = '';
+            while (($line = fgets($handle)) !== false) {
+                $trim = trim($line);
+                if ($trim === '' || strpos($trim, '--') === 0) continue;
+                $statement .= $line;
+                if (substr($trim, -1) === ';') {
+                    $result = $wpdb->query($statement);
+                    if ($result === false) {
+                        throw new \RuntimeException('Rollback SQL failed: ' . $wpdb->last_error);
+                    }
+                    $statement = '';
+                }
             }
-            $wpdb->query($statement);
-            if ($wpdb->last_error) {
-                throw new \RuntimeException('SQL error during rollback: ' . $wpdb->last_error);
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    private function restoreDirectory(string $rollbackPath, string $livePath): void
+    {
+        if (!is_dir($rollbackPath)) {
+            // Original directory never existed; nothing to restore.
+            return;
+        }
+        if (is_dir($livePath)) {
+            // Move the failed-import dir aside so rename succeeds.
+            $failedAside = $livePath . '.failed.' . time();
+            if (!rename($livePath, $failedAside)) {
+                throw new \RuntimeException('Could not move aside current directory: ' . $livePath);
             }
+        }
+        if (!rename($rollbackPath, $livePath)) {
+            throw new \RuntimeException(sprintf('rename(%s, %s) failed.', $rollbackPath, $livePath));
         }
     }
 
     /**
-     * For each directory path that was recorded in the snapshot,
-     * verify it still exists (the pre-import content should be intact
-     * because we backed it up before overwriting). This is a no-op
-     * in the current implementation — a future version might copy
-     * backup copies back from the rollback dir.
-     *
-     * @param string[] $contentPaths
+     * @param array<int, string> $errors
+     * @return array<int, string>
      */
-    private function restoreContentDirectories(array $contentPaths): void
+    private function buildManualRecoverySteps(Snapshot $snapshot, array $errors): array
     {
-        // Currently a no-op: the snapshot records paths that existed BEFORE
-        // the import. File-level rollback (copying entire directories) is out
-        // of scope for v0.1 — only the database is restored.
-        // Future: diff the directory listing and remove newly added files.
-        foreach ($contentPaths as $path) {
-            if (!is_dir($path)) {
-                // Logged as warning; not fatal.
-                error_log(sprintf('[wp-migrate-safe] Rollback: content path missing: %s', $path));
-            }
-        }
+        return [
+            sprintf('Snapshot ID: %s', $snapshot->id()),
+            sprintf('DB dump is at: %s', $snapshot->dbDumpPath()),
+            sprintf('Old plugins: %s', $snapshot->pluginsRollbackPath()),
+            sprintf('Old themes: %s', $snapshot->themesRollbackPath()),
+            sprintf('Old uploads: %s', $snapshot->uploadsRollbackPath()),
+            '1. Connect to your server via SSH or FTP.',
+            '2. Restore DB manually: mysql < ' . $snapshot->dbDumpPath(),
+            '3. Rename directories:',
+            '   mv ' . $snapshot->pluginsRollbackPath() . ' ' . $this->wpContentDir . '/plugins',
+            '   mv ' . $snapshot->themesRollbackPath() . ' ' . $this->wpContentDir . '/themes',
+            '   mv ' . $snapshot->uploadsRollbackPath() . ' ' . $this->wpContentDir . '/uploads',
+            '4. Contact support with these exact error messages: ' . implode(' | ', $errors),
+        ];
     }
 }

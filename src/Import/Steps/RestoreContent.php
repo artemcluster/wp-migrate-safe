@@ -8,73 +8,35 @@ use WpMigrateSafe\Import\ImportStep;
 use WpMigrateSafe\Job\StepResult;
 
 /**
- * Step 4: Copy extracted content files (plugins, themes, uploads) over the live wp-content.
+ * Move extracted `wp-content/{plugins,themes,uploads}` trees into their real locations.
  *
- * Files are moved from the extract dir into the appropriate wp-content subdirectories.
+ * The snapshot step already renamed the originals aside to `*.rollback.{id}`, so
+ * the target paths are free and we can rename our extracted dirs into place.
  */
 final class RestoreContent implements ImportStep
 {
-    /** Subdirectories of wp-content that we restore. */
-    private const CONTENT_DIRS = ['plugins', 'themes', 'uploads', 'mu-plugins'];
-
-    public function name(): string
-    {
-        return 'restore_content';
-    }
+    public function name(): string { return 'restore-content'; }
 
     public function run(ImportContext $context, array $cursor, int $maxSeconds): StepResult
     {
-        $extractDir    = $context->extractDir();
-        $wpContentDir  = $context->wpContentDir();
+        $extracted = $context->extractDir();
+        $wpContent = $context->wpContentDir();
 
-        $movedCount = 0;
+        foreach (['plugins', 'themes', 'uploads'] as $sub) {
+            $from = $extracted . '/wp-content/' . $sub;
+            $to = $wpContent . '/' . $sub;
+            if (!is_dir($from)) continue;
 
-        foreach (self::CONTENT_DIRS as $subdir) {
-            $src = $extractDir . '/' . $subdir;
-            if (!is_dir($src)) {
-                continue;
+            if (is_dir($to)) {
+                // Defensive: move out of the way if it reappeared somehow.
+                $aside = $to . '.obsolete.' . time();
+                rename($to, $aside);
             }
-
-            $dst = $wpContentDir . '/' . $subdir;
-            $movedCount += $this->copyDirectory($src, $dst);
+            if (!rename($from, $to)) {
+                throw new \RuntimeException(sprintf('Could not rename %s to %s', $from, $to));
+            }
         }
 
-        return StepResult::complete(
-            100,
-            sprintf('Restored %d content files.', $movedCount),
-            ['content_files_restored' => $movedCount]
-        );
-    }
-
-    private function copyDirectory(string $src, string $dst): int
-    {
-        if (!is_dir($dst) && !mkdir($dst, 0755, true) && !is_dir($dst)) {
-            throw new \RuntimeException('Could not create directory: ' . $dst);
-        }
-
-        $count = 0;
-        $it = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($src, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::SELF_FIRST
-        );
-
-        foreach ($it as $item) {
-            /** @var \SplFileInfo $item */
-            $target = $dst . '/' . $it->getSubPathname();
-
-            if ($item->isDir()) {
-                if (!is_dir($target) && !mkdir($target, 0755, true) && !is_dir($target)) {
-                    throw new \RuntimeException('Could not create directory: ' . $target);
-                }
-                continue;
-            }
-
-            if (!copy($item->getPathname(), $target)) {
-                throw new \RuntimeException('Could not copy file: ' . $item->getPathname());
-            }
-            $count++;
-        }
-
-        return $count;
+        return StepResult::complete(100, 'Content restored.');
     }
 }

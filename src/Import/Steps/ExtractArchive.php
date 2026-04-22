@@ -8,34 +8,37 @@ use WpMigrateSafe\Import\ImportContext;
 use WpMigrateSafe\Import\ImportStep;
 use WpMigrateSafe\Job\StepResult;
 
-/**
- * Step 2: Extract the .wpress archive to a temporary directory.
- *
- * Uses a cursor to resume extraction across multiple HTTP requests if
- * the archive is large.
- */
 final class ExtractArchive implements ImportStep
 {
-    public function name(): string
-    {
-        return 'extract_archive';
-    }
+    public function name(): string { return 'extract'; }
 
     public function run(ImportContext $context, array $cursor, int $maxSeconds): StepResult
     {
-        $extractDir = $context->extractDir();
+        $started = microtime(true);
 
-        if (!is_dir($extractDir) && !mkdir($extractDir, 0755, true) && !is_dir($extractDir)) {
-            throw new \RuntimeException('Could not create extract directory: ' . $extractDir);
-        }
+        $dest = $context->extractDir();
+        if (!is_dir($dest)) mkdir($dest, 0755, true);
 
         $reader = new Reader($context->archivePath());
-        $count  = $reader->extractAll($extractDir);
 
-        return StepResult::complete(
-            100,
-            sprintf('Extracted %d files.', $count),
-            ['extracted_files' => $count]
-        );
+        $entries = iterator_to_array($reader->listFiles(), false);
+        $total = count($entries);
+        $startIdx = (int) ($cursor['index'] ?? 0);
+
+        for ($i = $startIdx; $i < $total; $i++) {
+            [$header, $offset] = $entries[$i];
+            $reader->extractFile($header, $offset, $dest);
+
+            if (microtime(true) - $started >= $maxSeconds) {
+                $progress = $total > 0 ? (int) floor(($i + 1) / $total * 100) : 100;
+                return StepResult::advance(
+                    ['index' => $i + 1, 'total' => $total],
+                    $progress,
+                    sprintf('Extracting %d of %d', $i + 1, $total)
+                );
+            }
+        }
+
+        return StepResult::complete(100, sprintf('Extracted %d files.', $total));
     }
 }

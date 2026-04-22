@@ -7,51 +7,37 @@ use WpMigrateSafe\Import\ImportContext;
 use WpMigrateSafe\Import\ImportStep;
 use WpMigrateSafe\Job\StepResult;
 
-/**
- * Step 5: Finalize the import — clean up temp files, flush caches.
- *
- * Requires a live WordPress environment (cache flush calls are WordPress functions).
- */
 final class FinalizeImport implements ImportStep
 {
-    public function name(): string
-    {
-        return 'finalize_import';
-    }
+    public function name(): string { return 'finalize'; }
 
     public function run(ImportContext $context, array $cursor, int $maxSeconds): StepResult
     {
-        // Clean up extract directory.
-        $this->removeDirectory($context->extractDir());
+        // Flush WP caches + rewrite rules. The site is now live on the imported data.
+        if (function_exists('wp_cache_flush')) wp_cache_flush();
+        if (function_exists('flush_rewrite_rules')) flush_rewrite_rules(false);
 
-        // Flush WordPress object cache if available.
-        if (function_exists('wp_cache_flush')) {
-            wp_cache_flush();
+        // Clean up extraction directory.
+        $this->rmTree($context->extractDir());
+
+        $snapshotId = (string) ($cursor['snapshot_id'] ?? '');
+        if ($snapshotId !== '') {
+            $store = $context->snapshotStore();
+            $snapshot = $store->load($snapshotId);
+            $store->save($snapshot->commit());
         }
 
-        return StepResult::complete(100, 'Import finalized.');
+        return StepResult::complete(100, 'Import complete. Site is live on new data.');
     }
 
-    private function removeDirectory(string $dir): void
+    private function rmTree(string $dir): void
     {
-        if (!is_dir($dir)) {
-            return;
+        if (!is_dir($dir)) return;
+        foreach (scandir($dir) as $e) {
+            if ($e === '.' || $e === '..') continue;
+            $p = $dir . '/' . $e;
+            is_dir($p) ? $this->rmTree($p) : @unlink($p);
         }
-
-        $it = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::CHILD_FIRST
-        );
-
-        foreach ($it as $item) {
-            /** @var \SplFileInfo $item */
-            if ($item->isDir()) {
-                @rmdir($item->getPathname());
-            } else {
-                @unlink($item->getPathname());
-            }
-        }
-
         @rmdir($dir);
     }
 }

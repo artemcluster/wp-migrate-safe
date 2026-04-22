@@ -6,71 +6,81 @@ namespace WpMigrateSafe\Rest;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
+use WpMigrateSafe\Import\DryRun\ArchiveValidityCheck;
+use WpMigrateSafe\Import\DryRun\DiskSpaceCheck;
+use WpMigrateSafe\Import\DryRun\DryRunReport;
+use WpMigrateSafe\Import\DryRun\MySqlVersionCheck;
 use WpMigrateSafe\Import\ImportContext;
 use WpMigrateSafe\Import\ImportJob;
+use WpMigrateSafe\Import\Snapshot\SnapshotStore;
 use WpMigrateSafe\Job\Job;
 use WpMigrateSafe\Job\JobStatus;
 use WpMigrateSafe\Job\JobStore;
 use WpMigrateSafe\Job\Exception\JobNotFoundException;
 use WpMigrateSafe\Plugin\Paths;
 
-/**
- * REST controller for the import pipeline.
- *
- * Routes (registered in RestRouter):
- *   POST /import/start  — create a new import job from an uploaded .wpress file
- *   POST /import/step   — advance the import job one slice
- *   GET  /import/status — poll job status
- *   POST /import/abort  — abort a running import
- */
 final class ImportController
 {
     private const STEP_BUDGET_SECONDS = 20;
 
+    /**
+     * POST /import/dry-run { filename, old_url?, new_url? }
+     * Runs checks without starting the import job. Returns DryRunReport.
+     */
+    public function dryRun(WP_REST_Request $request)
+    {
+        $req = new Request($request);
+        $filename = basename($req->getString('filename'));
+        $archivePath = Paths::backupsDir() . '/' . $filename;
+
+        if (!is_file($archivePath)) {
+            return new WP_Error('wpms_not_found', 'Archive not found: ' . $filename, ['status' => 404]);
+        }
+
+        global $wpdb;
+        $freeBytes = (int) (@disk_free_space(Paths::backupsDir()) ?: 0);
+
+        $report = DryRunReport::ok()
+            ->merge((new DiskSpaceCheck())->run($archivePath, $freeBytes))
+            ->merge((new MySqlVersionCheck())->run((string) $wpdb->db_version()))
+            ->merge((new ArchiveValidityCheck())->run($archivePath));
+
+        return new WP_REST_Response($report->toArray(), 200);
+    }
+
     public function start(WP_REST_Request $request)
     {
-        $req      = new Request($request);
-        $filename = $req->getString('filename');
+        $req = new Request($request);
+        $filename = basename($req->getString('filename'));
+        $archivePath = Paths::backupsDir() . '/' . $filename;
 
-        if ($filename === '') {
-            return new WP_Error('wpms_invalid_params', 'Missing filename.', ['status' => 400]);
-        }
-
-        // Locate the uploaded file in the backups directory.
-        $archivePath = Paths::backupsDir() . '/' . basename($filename);
         if (!is_file($archivePath)) {
-            return new WP_Error('wpms_file_not_found', 'Uploaded archive not found: ' . $filename, ['status' => 404]);
+            return new WP_Error('wpms_not_found', 'Archive not found.', ['status' => 404]);
         }
-
-        // Prepare an extract directory inside the rollback dir.
-        $extractDir = Paths::rollbackDir() . '/_extract_' . bin2hex(random_bytes(8));
 
         $job = Job::newImport([
-            'filename'     => $filename,
             'archive_path' => $archivePath,
-            'extract_dir'  => $extractDir,
-            'source_prefix' => $req->getString('source_prefix') ?: 'wp_',
-            'target_prefix' => $req->getString('target_prefix') ?: (defined('$table_prefix') ? $GLOBALS['table_prefix'] : 'wp_'),
-            'source_url'   => $req->getString('source_url'),
-            'target_url'   => $req->getString('target_url') ?: get_site_url(),
+            'filename' => $filename,
+            'old_url' => $req->getString('old_url'),
+            'new_url' => $req->getString('new_url', home_url()),
+            'extract_dir' => Paths::backupsDir() . '/_extract_' . bin2hex(random_bytes(8)),
         ]);
 
         $this->jobStore()->save($job);
 
         return new WP_REST_Response([
-            'job_id'   => $job->id(),
-            'filename' => $filename,
+            'job_id' => $job->id(),
         ], 200);
     }
 
     public function step(WP_REST_Request $request)
     {
-        $req   = new Request($request);
+        $req = new Request($request);
         $jobId = $req->getString('job_id');
 
         try {
             $store = $this->jobStore();
-            $job   = $store->load($jobId);
+            $job = $store->load($jobId);
         } catch (JobNotFoundException $e) {
             return new WP_Error('wpms_job_not_found', $e->getMessage(), ['status' => 404]);
         }
@@ -79,10 +89,7 @@ final class ImportController
             return new WP_REST_Response($job->toArray(), 200);
         }
 
-        $context = $this->buildContext($job);
-        if ($context === null) {
-            return new WP_Error('wpms_invalid_job', 'Missing required meta fields.', ['status' => 400]);
-        }
+        $context = $this->contextFromJob($job);
 
         $job = ImportJob::runSlice($job, $context, self::STEP_BUDGET_SECONDS);
         $store->save($job);
@@ -92,10 +99,9 @@ final class ImportController
 
     public function status(WP_REST_Request $request)
     {
-        $req   = new Request($request);
-        $jobId = $req->getString('job_id');
+        $req = new Request($request);
         try {
-            $job = $this->jobStore()->load($jobId);
+            $job = $this->jobStore()->load($req->getString('job_id'));
             return new WP_REST_Response($job->toArray(), 200);
         } catch (JobNotFoundException $e) {
             return new WP_Error('wpms_job_not_found', $e->getMessage(), ['status' => 404]);
@@ -104,52 +110,27 @@ final class ImportController
 
     public function abort(WP_REST_Request $request)
     {
-        $req   = new Request($request);
-        $jobId = $req->getString('job_id');
-
+        $req = new Request($request);
         try {
             $store = $this->jobStore();
-            $job   = $store->load($jobId);
-
+            $job = $store->load($req->getString('job_id'));
             if (!JobStatus::isTerminal($job->status())) {
+                // If we have a snapshot, run rollback.
+                $snapshotId = (string) ($job->meta()['snapshot_id'] ?? '');
+                if ($snapshotId !== '') {
+                    $context = $this->contextFromJob($job);
+                    $snapshot = $context->snapshotStore()->load($snapshotId);
+                    (new \WpMigrateSafe\Rollback\RollbackExecutor($context->wpContentDir()))->execute($snapshot);
+                }
                 $job = $job->withStatus(JobStatus::ABORTED);
                 $store->save($job);
             }
-
-            // Clean up extract directory if it exists.
-            $extractDir = (string) ($job->meta()['extract_dir'] ?? '');
-            if ($extractDir !== '' && is_dir($extractDir)) {
-                $this->removeDirectory($extractDir);
-            }
-
-            return new WP_REST_Response(['aborted' => true, 'job_id' => $jobId], 200);
+            return new WP_REST_Response(['aborted' => true, 'job_id' => $job->id()], 200);
         } catch (JobNotFoundException $e) {
             return new WP_Error('wpms_job_not_found', $e->getMessage(), ['status' => 404]);
+        } catch (\Throwable $e) {
+            return new WP_Error('wpms_abort_failed', $e->getMessage(), ['status' => 500]);
         }
-    }
-
-    private function buildContext(Job $job): ?ImportContext
-    {
-        $meta = $job->meta();
-
-        $archivePath = (string) ($meta['archive_path'] ?? '');
-        $extractDir  = (string) ($meta['extract_dir'] ?? '');
-
-        if ($archivePath === '' || $extractDir === '') {
-            return null;
-        }
-
-        return new ImportContext(
-            $archivePath,
-            ABSPATH,
-            WP_CONTENT_DIR,
-            Paths::rollbackDir(),
-            $extractDir,
-            (string) ($meta['source_prefix'] ?? 'wp_'),
-            (string) ($meta['target_prefix'] ?? 'wp_'),
-            (string) ($meta['source_url'] ?? ''),
-            (string) ($meta['target_url'] ?? get_site_url())
-        );
     }
 
     private function jobStore(): JobStore
@@ -157,23 +138,17 @@ final class ImportController
         return new JobStore(Paths::jobsDir());
     }
 
-    private function removeDirectory(string $dir): void
+    private function contextFromJob(Job $job): ImportContext
     {
-        if (!is_dir($dir)) {
-            return;
-        }
-        $it = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::CHILD_FIRST
+        $meta = $job->meta();
+        return new ImportContext(
+            (string) $meta['archive_path'],
+            ABSPATH,
+            WP_CONTENT_DIR,
+            (string) ($meta['extract_dir'] ?? Paths::backupsDir() . '/_extract_' . $job->id()),
+            (string) ($meta['old_url'] ?? ''),
+            (string) ($meta['new_url'] ?? home_url()),
+            new SnapshotStore(Paths::rollbackDir())
         );
-        foreach ($it as $item) {
-            /** @var \SplFileInfo $item */
-            if ($item->isDir()) {
-                @rmdir($item->getPathname());
-            } else {
-                @unlink($item->getPathname());
-            }
-        }
-        @rmdir($dir);
     }
 }

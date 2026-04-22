@@ -4,8 +4,8 @@ declare(strict_types=1);
 namespace WpMigrateSafe\Tests\Rollback;
 
 use WpMigrateSafe\Import\Snapshot\Snapshot;
+use WpMigrateSafe\Rollback\Exception\RollbackFailedException;
 use WpMigrateSafe\Rollback\RollbackExecutor;
-use WpMigrateSafe\Rollback\RollbackFailedException;
 
 /**
  * WP-Integration test — requires WP_TESTS_DIR and a live MySQL connection.
@@ -33,6 +33,19 @@ final class RollbackExecutorTest extends \WP_UnitTestCase
         @rmdir($this->tmpDir);
     }
 
+    private function makeSnapshot(string $dumpPath): Snapshot
+    {
+        return new Snapshot(
+            bin2hex(random_bytes(16)),
+            time(),
+            $dumpPath,
+            $this->tmpDir . '/plugins.rollback',
+            $this->tmpDir . '/themes.rollback',
+            $this->tmpDir . '/uploads.rollback',
+            Snapshot::STATUS_PENDING
+        );
+    }
+
     public function testRollbackRestoresDatabaseFromDump(): void
     {
         global $wpdb;
@@ -54,9 +67,9 @@ final class RollbackExecutorTest extends \WP_UnitTestCase
         $this->assertSame('modified', $wpdb->get_var("SELECT val FROM `{$table}` WHERE id=1"));
 
         // Rollback.
-        $snapshot = new Snapshot('snap-test-rb', time(), [], $dumpPath, $wpdb->prefix);
+        $snapshot = $this->makeSnapshot($dumpPath);
         $executor = new RollbackExecutor(WP_CONTENT_DIR);
-        $executor->rollback($snapshot);
+        $executor->execute($snapshot);
 
         // Value should be restored.
         $this->assertSame('original', $wpdb->get_var("SELECT val FROM `{$table}` WHERE id=1"));
@@ -69,8 +82,8 @@ final class RollbackExecutorTest extends \WP_UnitTestCase
     {
         $this->expectException(RollbackFailedException::class);
 
-        $snapshot = new Snapshot('snap-no-dump', time(), [], '/nonexistent/dump.sql', 'wp_');
+        $snapshot = $this->makeSnapshot('/nonexistent/dump.sql');
         $executor = new RollbackExecutor(WP_CONTENT_DIR);
-        $executor->rollback($snapshot);
+        $executor->execute($snapshot);
     }
 }
