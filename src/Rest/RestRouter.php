@@ -68,6 +68,35 @@ final class RestRouter
             'callback'            => [$backups, 'delete'],
             'permission_callback' => [self::class, 'checkPermission'],
         ]);
+
+        $export = new ExportController();
+
+        register_rest_route($ns, '/export/start', [
+            'methods' => 'POST',
+            'callback' => [$export, 'start'],
+            'permission_callback' => [self::class, 'checkPermission'],
+        ]);
+
+        register_rest_route($ns, '/export/step', [
+            'methods' => 'POST',
+            'callback' => [$export, 'step'],
+            'permission_callback' => [self::class, 'checkPermission'],
+            'args' => ['job_id' => ['type' => 'string', 'required' => true]],
+        ]);
+
+        register_rest_route($ns, '/export/status', [
+            'methods' => 'GET',
+            'callback' => [$export, 'status'],
+            'permission_callback' => [self::class, 'checkPermission'],
+            'args' => ['job_id' => ['type' => 'string', 'required' => true]],
+        ]);
+
+        register_rest_route($ns, '/export/abort', [
+            'methods' => 'POST',
+            'callback' => [$export, 'abort'],
+            'permission_callback' => [self::class, 'checkPermission'],
+            'args' => ['job_id' => ['type' => 'string', 'required' => true]],
+        ]);
     }
 
     public static function checkPermission(): bool
