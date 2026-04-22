@@ -4,38 +4,42 @@ declare(strict_types=1);
 namespace WpMigrateSafe\Import\DryRun;
 
 /**
- * Verifies that the target MySQL server is version 5.6+ (minimum for utf8mb4).
+ * Check the current MySQL/MariaDB version against a minimum requirement.
+ *
+ * The "expected" version is stored in archive meta if Plan 4's exporter recorded it;
+ * for MVP we simply check that the current server is at least MySQL 5.7 / MariaDB 10.3,
+ * which is required by WordPress 6.x anyway.
  */
 final class MySqlVersionCheck
 {
-    private const MIN_VERSION = '5.6.0';
+    private const MIN_MYSQL  = '5.7.0';
+    private const MIN_MARIADB = '10.3.0';
 
-    private ?string $serverVersion;
-
-    public function __construct(?string $serverVersion)
+    public function run(string $serverVersion): DryRunReport
     {
-        $this->serverVersion = $serverVersion;
+        $isMariaDb = stripos($serverVersion, 'mariadb') !== false;
+        $numeric = $this->extractNumericVersion($serverVersion);
+        $min = $isMariaDb ? self::MIN_MARIADB : self::MIN_MYSQL;
+
+        if (version_compare($numeric, $min, '<')) {
+            return new DryRunReport(
+                [],
+                [[
+                    'code' => 'MYSQL_VERSION_OLD',
+                    'message' => sprintf('Server version %s is older than recommended %s.', $numeric, $min),
+                    'hint' => 'Consider upgrading MySQL/MariaDB before import; some CREATE TABLE statements may fail.',
+                ]]
+            );
+        }
+
+        return DryRunReport::ok();
     }
 
-    public function run(DryRunReport $report): DryRunReport
+    private function extractNumericVersion(string $version): string
     {
-        $name = 'mysql_version';
-
-        if ($this->serverVersion === null) {
-            return $report->withCheck($name, false, 'Could not determine MySQL server version.');
+        if (preg_match('/(\d+\.\d+\.\d+)/', $version, $m)) {
+            return $m[1];
         }
-
-        // Extract numeric version prefix (e.g. "5.7.33-log" → "5.7.33").
-        if (!preg_match('/^(\d+\.\d+\.\d+)/', $this->serverVersion, $m)) {
-            return $report->withCheck($name, false, 'Unrecognised MySQL version string: ' . $this->serverVersion);
-        }
-
-        $version = $m[1];
-        $passed  = version_compare($version, self::MIN_VERSION, '>=');
-        $message = $passed
-            ? sprintf('MySQL %s meets minimum requirement (%s).', $version, self::MIN_VERSION)
-            : sprintf('MySQL %s is below minimum requirement (%s).', $version, self::MIN_VERSION);
-
-        return $report->withCheck($name, $passed, $message);
+        return '0.0.0';
     }
 }

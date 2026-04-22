@@ -4,55 +4,50 @@ declare(strict_types=1);
 namespace WpMigrateSafe\Import\DryRun;
 
 /**
- * Immutable report produced by running pre-import checks.
+ * Immutable result of running all dry-run checks against an archive.
  *
- * Each check adds a pass/fail entry with an optional message.
- * The report is considered OK when all checks pass.
+ * Warnings allow the user to proceed at their own risk; errors block import.
  */
 final class DryRunReport
 {
-    /** @var array<array{name:string,passed:bool,message:string}> */
-    private array $checks;
+    /** @var array<int, array{code: string, message: string, hint: string}> */
+    private array $errors;
+    /** @var array<int, array{code: string, message: string, hint: string}> */
+    private array $warnings;
 
-    public function __construct()
+    /**
+     * @param array<int, array{code: string, message: string, hint: string}> $errors
+     * @param array<int, array{code: string, message: string, hint: string}> $warnings
+     */
+    public function __construct(array $errors, array $warnings)
     {
-        $this->checks = [];
+        $this->errors = $errors;
+        $this->warnings = $warnings;
     }
 
-    private function __clone() {}
+    public static function ok(): self { return new self([], []); }
 
-    public function withCheck(string $name, bool $passed, string $message = ''): self
-    {
-        $clone = clone $this;
-        $clone->checks[] = [
-            'name'    => $name,
-            'passed'  => $passed,
-            'message' => $message,
-        ];
-        return $clone;
-    }
+    public function errors(): array { return $this->errors; }
+    public function warnings(): array { return $this->warnings; }
 
-    public function ok(): bool
-    {
-        foreach ($this->checks as $check) {
-            if (!$check['passed']) {
-                return false;
-            }
-        }
-        return true;
-    }
+    public function hasErrors(): bool { return count($this->errors) > 0; }
+    public function hasWarnings(): bool { return count($this->warnings) > 0; }
+    public function canProceed(): bool { return !$this->hasErrors(); }
 
-    /** @return array<array{name:string,passed:bool,message:string}> */
-    public function checks(): array
+    public function merge(DryRunReport $other): self
     {
-        return $this->checks;
+        return new self(
+            array_merge($this->errors, $other->errors()),
+            array_merge($this->warnings, $other->warnings())
+        );
     }
 
     public function toArray(): array
     {
         return [
-            'ok'     => $this->ok(),
-            'checks' => $this->checks,
+            'errors' => $this->errors,
+            'warnings' => $this->warnings,
+            'can_proceed' => $this->canProceed(),
         ];
     }
 }

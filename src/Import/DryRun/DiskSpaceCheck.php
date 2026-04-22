@@ -4,37 +4,67 @@ declare(strict_types=1);
 namespace WpMigrateSafe\Import\DryRun;
 
 /**
- * Verifies that there is sufficient free disk space to complete the import.
+ * Verify at least 2× archive size is available on disk.
  *
- * Rule: free bytes must be >= archiveBytes * 3 (room for extraction + DB import).
+ * Rationale: snapshot takes ~1× (plus SQL dump), extraction takes ~1×,
+ * so during import we need roughly 2-3× free space.
  */
 final class DiskSpaceCheck
 {
-    private const MULTIPLIER = 3;
-
-    private int $archiveBytes;
-    private ?int $freeBytes;
-
-    public function __construct(int $archiveBytes, ?int $freeBytes)
+    public function run(string $archivePath, int $freeBytes): DryRunReport
     {
-        $this->archiveBytes = $archiveBytes;
-        $this->freeBytes    = $freeBytes;
-    }
-
-    public function run(DryRunReport $report): DryRunReport
-    {
-        $name = 'disk_space';
-
-        if ($this->freeBytes === null) {
-            return $report->withCheck($name, true, 'Free disk space could not be determined; skipping check.');
+        if (!is_file($archivePath)) {
+            return new DryRunReport(
+                [['code' => 'ARCHIVE_MISSING', 'message' => 'Archive file not found.', 'hint' => '']],
+                []
+            );
         }
 
-        $required = $this->archiveBytes * self::MULTIPLIER;
-        $passed   = $this->freeBytes >= $required;
-        $message  = $passed
-            ? sprintf('OK — %d MB free, %d MB required.', intdiv($this->freeBytes, 1024 ** 2), intdiv($required, 1024 ** 2))
-            : sprintf('Insufficient disk space: %d MB free, %d MB required.', intdiv($this->freeBytes, 1024 ** 2), intdiv($required, 1024 ** 2));
+        $archiveSize = filesize($archivePath);
+        if ($archiveSize === false) {
+            return new DryRunReport(
+                [['code' => 'ARCHIVE_UNREADABLE', 'message' => 'Cannot stat archive.', 'hint' => '']],
+                []
+            );
+        }
 
-        return $report->withCheck($name, $passed, $message);
+        $required = $archiveSize * 2;
+        if ($freeBytes < $required) {
+            return new DryRunReport(
+                [[
+                    'code' => 'DISK_FULL',
+                    'message' => sprintf(
+                        'Not enough free disk space: %s required, %s available.',
+                        self::formatBytes($required),
+                        self::formatBytes($freeBytes)
+                    ),
+                    'hint' => 'Delete old backups or increase hosting quota.',
+                ]],
+                []
+            );
+        }
+
+        // Warn if free space is close to the bound (<3× archive).
+        if ($freeBytes < $archiveSize * 3) {
+            return new DryRunReport([], [[
+                'code' => 'DISK_SPACE_TIGHT',
+                'message' => sprintf(
+                    'Disk space is tight: %s available. Recommended: %s.',
+                    self::formatBytes($freeBytes),
+                    self::formatBytes($archiveSize * 3)
+                ),
+                'hint' => 'Import may succeed but leaves little margin.',
+            ]]);
+        }
+
+        return DryRunReport::ok();
+    }
+
+    private static function formatBytes(int $bytes): string
+    {
+        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        $i = $bytes > 0 ? (int) floor(log($bytes, 1024)) : 0;
+        $i = min($i, count($units) - 1);
+        return sprintf('%.2f %s', $bytes / (1024 ** $i), $units[$i]);
     }
 }
