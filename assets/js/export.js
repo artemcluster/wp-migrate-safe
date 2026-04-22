@@ -72,6 +72,9 @@
             fill.style.width = step.progress + '%';
             text.textContent = step.progress + '%';
             detail.textContent = stepDescription(step);
+            if (step.stale) {
+                detail.textContent += ' ⚠ No heartbeat for >60s — worker may have died. Consider aborting.';
+            }
         }
 
         function stepDescription(step) {

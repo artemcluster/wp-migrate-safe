@@ -82,12 +82,13 @@ final class ExportController
     public function status(WP_REST_Request $request)
     {
         $req = new Request($request);
-        $jobId = $req->getString('job_id');
         try {
-            $job = $this->jobStore()->load($jobId);
-            return new WP_REST_Response($job->toArray(), 200);
-        } catch (JobNotFoundException $e) {
-            return new WP_Error('wpms_job_not_found', $e->getMessage(), ['status' => 404]);
+            $job = $this->jobStore()->load($req->getString('job_id'));
+            $data = $job->toArray();
+            $data['stale'] = \WpMigrateSafe\Progress\Heartbeat::isStale($job);
+            return new WP_REST_Response($data, 200);
+        } catch (\WpMigrateSafe\Job\Exception\JobNotFoundException $e) {
+            return \WpMigrateSafe\Errors\ErrorResponse::fromCode('STEP_TIMEOUT', 404, ['job_id' => $req->getString('job_id')]);
         }
     }
 
