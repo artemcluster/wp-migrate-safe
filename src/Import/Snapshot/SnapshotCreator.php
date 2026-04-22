@@ -3,135 +3,70 @@ declare(strict_types=1);
 
 namespace WpMigrateSafe\Import\Snapshot;
 
+use WpMigrateSafe\Export\Database\DatabaseDumper;
+
 /**
- * Creates a rollback snapshot before import begins.
+ * Create a pre-import snapshot:
+ *   1. Dump current DB to {rollbackDir}/{id}/database.sql (reuses Plan 4's DatabaseDumper).
+ *   2. Atomically rename:
+ *      wp-content/plugins  → wp-content/plugins.rollback.{id}
+ *      wp-content/themes   → wp-content/themes.rollback.{id}
+ *      wp-content/uploads  → wp-content/uploads.rollback.{id}
  *
- * Dumps the current database to a SQL file and records which
- * wp-content directories exist, so RollbackExecutor can restore them.
- *
- * This class requires a live WordPress + MySQL environment (WP-integration test).
+ * Rename is O(1) on same filesystem — no data is copied.
+ * After rename, plugins/themes/uploads dirs DO NOT EXIST. The caller must
+ * populate them from the archive before any WordPress feature accesses them.
  */
 final class SnapshotCreator
 {
-    private string $rollbackDir;
+    private SnapshotStore $store;
     private string $wpContentDir;
-    private string $dbPrefix;
 
-    public function __construct(string $rollbackDir, string $wpContentDir, string $dbPrefix)
+    public function __construct(SnapshotStore $store, string $wpContentDir)
     {
-        $this->rollbackDir  = rtrim($rollbackDir, '/\\');
+        $this->store = $store;
         $this->wpContentDir = rtrim($wpContentDir, '/\\');
-        $this->dbPrefix     = $dbPrefix;
     }
 
-    /**
-     * Create a full snapshot: DB dump + record of content directories.
-     *
-     * @throws \RuntimeException on any failure.
-     */
     public function create(): Snapshot
     {
-        $id        = bin2hex(random_bytes(16));
-        $timestamp = time();
-        $dumpPath  = $this->rollbackDir . '/' . $id . '_db.sql';
+        $id = bin2hex(random_bytes(16));
+        $snapshotDir = $this->store->rollbackDir() . '/' . $id;
+        if (!is_dir($snapshotDir)) mkdir($snapshotDir, 0755, true);
 
-        $this->dumpDatabase($dumpPath);
-
-        $contentPaths = $this->listContentPaths();
-
-        return new Snapshot(
-            $id,
-            $timestamp,
-            $contentPaths,
-            $dumpPath,
-            $this->dbPrefix
-        );
-    }
-
-    private function dumpDatabase(string $dumpPath): void
-    {
-        global $wpdb;
-
-        $tables = $wpdb->get_col("SHOW TABLES LIKE '{$wpdb->esc_like($this->dbPrefix)}%'");
-        if ($tables === null) {
-            throw new \RuntimeException('Could not retrieve table list from database.');
-        }
-
-        $handle = @fopen($dumpPath, 'wb');
-        if ($handle === false) {
-            throw new \RuntimeException('Could not open dump file for writing: ' . $dumpPath);
-        }
-
-        try {
-            fwrite($handle, "-- wp-migrate-safe rollback dump\n");
-            fwrite($handle, "-- Generated: " . gmdate('Y-m-d H:i:s') . " UTC\n\n");
-            fwrite($handle, "SET FOREIGN_KEY_CHECKS=0;\n\n");
-
-            foreach ($tables as $table) {
-                $this->dumpTable($handle, (string) $table);
-            }
-
-            fwrite($handle, "SET FOREIGN_KEY_CHECKS=1;\n");
-        } finally {
-            fclose($handle);
-        }
-    }
-
-    /** @param resource $handle */
-    private function dumpTable($handle, string $table): void
-    {
-        global $wpdb;
-
-        // DROP + CREATE TABLE
-        $createRow = $wpdb->get_row("SHOW CREATE TABLE `{$table}`", ARRAY_N);
-        if (!$createRow) {
-            return;
-        }
-
-        fwrite($handle, "DROP TABLE IF EXISTS `{$table}`;\n");
-        fwrite($handle, $createRow[1] . ";\n\n");
-
-        // Data
-        $offset = 0;
-        $batch  = 500;
-
+        // 1. Dump database fully (snapshot runs in a single step, so budget is large).
+        $dumpPath = $snapshotDir . '/database.sql';
+        $dumper = new DatabaseDumper();
+        $cursor = [];
         do {
-            $rows = $wpdb->get_results(
-                $wpdb->prepare("SELECT * FROM `{$table}` LIMIT %d OFFSET %d", $batch, $offset),
-                ARRAY_N
-            );
+            $cursor = $dumper->dumpChunk($dumpPath, $cursor, 60);
+        } while (!$cursor['done']);
 
-            if (empty($rows)) {
-                break;
-            }
+        // 2. Rename content directories.
+        $pluginsRollback = $this->wpContentDir . '/plugins.rollback.' . $id;
+        $themesRollback  = $this->wpContentDir . '/themes.rollback.' . $id;
+        $uploadsRollback = $this->wpContentDir . '/uploads.rollback.' . $id;
 
-            foreach ($rows as $row) {
-                $values = implode(', ', array_map(
-                    fn($v) => $v === null ? 'NULL' : "'" . esc_sql((string) $v) . "'",
-                    $row
-                ));
-                fwrite($handle, "INSERT INTO `{$table}` VALUES ({$values});\n");
-            }
+        $this->renameIfExists($this->wpContentDir . '/plugins', $pluginsRollback);
+        $this->renameIfExists($this->wpContentDir . '/themes', $themesRollback);
+        $this->renameIfExists($this->wpContentDir . '/uploads', $uploadsRollback);
 
-            $offset += $batch;
-        } while (count($rows) === $batch);
-
-        fwrite($handle, "\n");
+        $snapshot = new Snapshot(
+            $id, time(), $dumpPath,
+            $pluginsRollback, $themesRollback, $uploadsRollback,
+            Snapshot::STATUS_PENDING
+        );
+        $this->store->save($snapshot);
+        return $snapshot;
     }
 
-    /** @return string[] */
-    private function listContentPaths(): array
+    private function renameIfExists(string $from, string $to): void
     {
-        $paths = [];
-        $dirs  = ['plugins', 'themes', 'uploads', 'mu-plugins'];
-
-        foreach ($dirs as $subdir) {
-            $path = $this->wpContentDir . '/' . $subdir;
-            if (is_dir($path)) {
-                $paths[] = $path;
-            }
+        if (!is_dir($from)) {
+            return; // Nothing to rename; snapshot records the expected path regardless.
         }
-
-        return $paths;
+        if (!rename($from, $to)) {
+            throw new \RuntimeException(sprintf('rename(%s, %s) failed.', $from, $to));
+        }
     }
 }

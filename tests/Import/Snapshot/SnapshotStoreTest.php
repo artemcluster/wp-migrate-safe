@@ -21,57 +21,46 @@ final class SnapshotStoreTest extends TestCase
 
     protected function tearDown(): void
     {
-        foreach ((array) glob($this->dir . '/*') as $f) {
-            @unlink($f);
-        }
-        @rmdir($this->dir);
+        $this->rmrf($this->dir);
     }
 
-    private function makeSnapshot(string $id = 'snap-abc123'): Snapshot
+    private function makeSnapshot(?string $id = null): Snapshot
     {
+        $id = $id ?? bin2hex(random_bytes(16));
         return new Snapshot(
             $id,
-            1700000000,
-            ['/var/www/html/wp-content/uploads'],
-            '/var/www/html/wp-content/wpms-backups/_rollback/dump.sql',
-            'wp_'
+            time(),
+            '/var/www/html/_rollback/' . $id . '/database.sql',
+            '/var/www/html/wp-content/plugins.rollback.' . $id,
+            '/var/www/html/wp-content/themes.rollback.' . $id,
+            '/var/www/html/wp-content/uploads.rollback.' . $id,
+            Snapshot::STATUS_PENDING
         );
     }
 
-    public function testSaveAndLoadRoundTrip(): void
+    public function testSaveLoadRoundTrip(): void
     {
         $snap = $this->makeSnapshot();
         $this->store->save($snap);
-
         $loaded = $this->store->load($snap->id());
-
-        $this->assertSame($snap->id(), $loaded->id());
-        $this->assertSame($snap->createdAt(), $loaded->createdAt());
-        $this->assertSame($snap->contentPaths(), $loaded->contentPaths());
-        $this->assertSame($snap->sqlDumpPath(), $loaded->sqlDumpPath());
-        $this->assertSame($snap->dbPrefix(), $loaded->dbPrefix());
+        $this->assertSame($snap->toArray(), $loaded->toArray());
     }
 
     public function testLoadThrowsForMissing(): void
     {
         $this->expectException(\RuntimeException::class);
-        $this->store->load('nonexistent-id-99');
+        $this->store->load(bin2hex(random_bytes(16)));
     }
 
-    public function testDeleteRemovesSnapshot(): void
+    public function testRollbackDirAccessor(): void
     {
-        $snap = $this->makeSnapshot('snap-to-delete');
-        $this->store->save($snap);
-        $this->store->delete($snap->id());
-
-        $this->expectException(\RuntimeException::class);
-        $this->store->load($snap->id());
+        $this->assertSame($this->dir, $this->store->rollbackDir());
     }
 
     public function testFindAllReturnsSortedNewestFirst(): void
     {
-        $older = new Snapshot('snap-older-aaa', 1000, [], '/tmp/a.sql', 'wp_');
-        $newer = new Snapshot('snap-newer-bbb', 2000, [], '/tmp/b.sql', 'wp_');
+        $older = new Snapshot(bin2hex(random_bytes(16)), 1000, '/a', '/b', '/c', '/d', Snapshot::STATUS_COMMITTED);
+        $newer = new Snapshot(bin2hex(random_bytes(16)), 2000, '/a', '/b', '/c', '/d', Snapshot::STATUS_COMMITTED);
 
         $this->store->save($older);
         $this->store->save($newer);
@@ -79,7 +68,33 @@ final class SnapshotStoreTest extends TestCase
         $all = $this->store->findAll();
 
         $this->assertCount(2, $all);
-        $this->assertSame('snap-newer-bbb', $all[0]->id());
-        $this->assertSame('snap-older-aaa', $all[1]->id());
+        $this->assertSame(2000, $all[0]->createdAt());
+        $this->assertSame(1000, $all[1]->createdAt());
+    }
+
+    public function testPurgeCommittedOldOnly(): void
+    {
+        $oldCommitted = new Snapshot(bin2hex(random_bytes(16)), time() - 8 * 86400, '/a', '/b', '/c', '/d', Snapshot::STATUS_COMMITTED);
+        $oldPending = new Snapshot(bin2hex(random_bytes(16)), time() - 8 * 86400, '/a', '/b', '/c', '/d', Snapshot::STATUS_PENDING);
+        $newCommitted = new Snapshot(bin2hex(random_bytes(16)), time(), '/a', '/b', '/c', '/d', Snapshot::STATUS_COMMITTED);
+
+        $this->store->save($oldCommitted);
+        $this->store->save($oldPending);
+        $this->store->save($newCommitted);
+
+        $removed = $this->store->purgeCommittedOlderThan(7 * 86400);
+        $this->assertSame(1, $removed);
+        $this->assertCount(2, $this->store->findAll());
+    }
+
+    private function rmrf(string $d): void
+    {
+        if (!is_dir($d)) return;
+        foreach (scandir($d) as $e) {
+            if ($e === '.' || $e === '..') continue;
+            $p = $d . '/' . $e;
+            is_dir($p) ? $this->rmrf($p) : @unlink($p);
+        }
+        @rmdir($d);
     }
 }

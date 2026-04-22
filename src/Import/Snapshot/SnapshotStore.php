@@ -4,62 +4,49 @@ declare(strict_types=1);
 namespace WpMigrateSafe\Import\Snapshot;
 
 /**
- * Filesystem persistence for Snapshot objects.
- *
- * Each snapshot is stored as a JSON file named `{snapshot_id}.json` under rollbackDir.
+ * Persist snapshot metadata as JSON under {rollbackDir}/{id}/snapshot.json.
  */
 final class SnapshotStore
 {
-    private string $dir;
+    private string $rollbackDir;
 
-    public function __construct(string $dir)
+    public function __construct(string $rollbackDir)
     {
-        if (!is_dir($dir) && !mkdir($dir, 0755, true) && !is_dir($dir)) {
-            throw new \RuntimeException('Could not create snapshot directory: ' . $dir);
+        $this->rollbackDir = rtrim($rollbackDir, '/\\');
+        if (!is_dir($this->rollbackDir)) {
+            mkdir($this->rollbackDir, 0755, true);
         }
-        $this->dir = rtrim($dir, '/\\');
     }
+
+    public function rollbackDir(): string { return $this->rollbackDir; }
 
     public function save(Snapshot $snapshot): void
     {
-        $path = $this->path($snapshot->id());
-        $tmp  = $path . '.tmp';
-        $json = json_encode($snapshot->toArray(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-        if ($json === false) {
-            throw new \RuntimeException('Could not serialize snapshot.');
-        }
-        if (file_put_contents($tmp, $json, LOCK_EX) === false) {
-            throw new \RuntimeException('Could not write snapshot file: ' . $tmp);
-        }
-        if (!rename($tmp, $path)) {
-            @unlink($tmp);
-            throw new \RuntimeException('Could not rename snapshot file into place.');
+        $dir = $this->rollbackDir . '/' . $snapshot->id();
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
+        $path = $dir . '/snapshot.json';
+        if (file_put_contents($path, json_encode($snapshot->toArray(), JSON_PRETTY_PRINT), LOCK_EX) === false) {
+            throw new \RuntimeException('Could not save snapshot metadata: ' . $path);
         }
     }
 
-    public function load(string $snapshotId): Snapshot
+    public function load(string $id): Snapshot
     {
-        $path = $this->path($snapshotId);
-        if (!is_file($path)) {
-            throw new \RuntimeException('Snapshot not found: ' . $snapshotId);
-        }
-        $data = json_decode((string) file_get_contents($path), true);
+        $path = $this->rollbackDir . '/' . $id . '/snapshot.json';
+        $data = json_decode((string) @file_get_contents($path), true);
         if (!is_array($data)) {
-            throw new \RuntimeException('Snapshot file corrupt: ' . $snapshotId);
+            throw new \RuntimeException('Snapshot not found: ' . $id);
         }
         return Snapshot::fromArray($data);
     }
 
-    public function delete(string $snapshotId): void
-    {
-        @unlink($this->path($snapshotId));
-    }
-
-    /** @return Snapshot[] All snapshots sorted newest first. */
+    /**
+     * @return Snapshot[]
+     */
     public function findAll(): array
     {
         $result = [];
-        foreach ((array) glob($this->dir . '/*.json') as $path) {
+        foreach ((array) glob($this->rollbackDir . '/*/snapshot.json') as $path) {
             $data = json_decode((string) file_get_contents($path), true);
             if (is_array($data)) {
                 $result[] = Snapshot::fromArray($data);
@@ -69,12 +56,39 @@ final class SnapshotStore
         return $result;
     }
 
-    private function path(string $snapshotId): string
+    public function remove(Snapshot $snapshot): void
     {
-        // Snapshot IDs may be UUIDs or hex strings; allow alphanumeric + hyphens.
-        if (!preg_match('/^[a-zA-Z0-9\-]{8,64}$/', $snapshotId)) {
-            throw new \InvalidArgumentException('Invalid snapshot id: ' . $snapshotId);
+        $dir = $this->rollbackDir . '/' . $snapshot->id();
+        $this->rmTree($dir);
+    }
+
+    /**
+     * Remove committed snapshots older than $maxAgeSeconds.
+     * Pending snapshots are never auto-removed (they may still be needed for manual rollback).
+     *
+     * @return int Number of snapshots removed.
+     */
+    public function purgeCommittedOlderThan(int $maxAgeSeconds): int
+    {
+        $cutoff = time() - $maxAgeSeconds;
+        $removed = 0;
+        foreach ($this->findAll() as $snapshot) {
+            if ($snapshot->status() !== Snapshot::STATUS_COMMITTED) continue;
+            if ($snapshot->createdAt() >= $cutoff) continue;
+            $this->remove($snapshot);
+            $removed++;
         }
-        return $this->dir . '/' . $snapshotId . '.json';
+        return $removed;
+    }
+
+    private function rmTree(string $dir): void
+    {
+        if (!is_dir($dir)) return;
+        foreach (scandir($dir) as $e) {
+            if ($e === '.' || $e === '..') continue;
+            $p = $dir . '/' . $e;
+            is_dir($p) ? $this->rmTree($p) : @unlink($p);
+        }
+        @rmdir($dir);
     }
 }
