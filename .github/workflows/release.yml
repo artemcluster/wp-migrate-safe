@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & publish release zip
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          coverage: none
+          tools: composer:v2
+
+      - name: Install production dependencies
+        run: composer install --no-dev --optimize-autoloader --prefer-dist --no-progress
+
+      - name: Determine version
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "number=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage plugin files
+        run: |
+          mkdir -p release/wp-migrate-safe
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='tests/' \
+            --exclude='.DS_Store' \
+            --exclude='.gitignore' \
+            --exclude='composer.lock' \
+            --exclude='phpunit.xml.dist' \
+            --exclude='phpunit-wp.xml.dist' \
+            --exclude='docs/MANUAL-VERIFICATION.md' \
+            --exclude='release/' \
+            ./ release/wp-migrate-safe/
+
+      - name: Create zip
+        id: zip
+        run: |
+          cd release
+          zip -rq "../wp-migrate-safe-${{ steps.version.outputs.number }}.zip" wp-migrate-safe
+          cd ..
+          ls -lah "wp-migrate-safe-${{ steps.version.outputs.number }}.zip"
+          sha256sum "wp-migrate-safe-${{ steps.version.outputs.number }}.zip" > "wp-migrate-safe-${{ steps.version.outputs.number }}.zip.sha256"
+          echo "path=wp-migrate-safe-${{ steps.version.outputs.number }}.zip" >> "$GITHUB_OUTPUT"
+          echo "checksum=wp-migrate-safe-${{ steps.version.outputs.number }}.zip.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog body
+        id: changelog
+        run: |
+          prev_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$prev_tag" ]; then
+            log=$(git log --pretty=format:'- %s (%h)' "$prev_tag"..HEAD --no-merges)
+          else
+            log=$(git log --pretty=format:'- %s (%h)' --no-merges | head -50)
+          fi
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "## Install"
+            echo ""
+            echo "Download the **\`wp-migrate-safe-${{ steps.version.outputs.number }}.zip\`** asset below (NOT the auto-generated \"Source code\" archives — they do not include the composer \`vendor/\` directory and will fatal on activation)."
+            echo ""
+            echo "1. WP Admin → Plugins → Add New → Upload Plugin → select the downloaded zip"
+            echo "2. Install → Activate"
+            echo "3. Tools → Migrate Safe"
+            echo ""
+            echo "## Changes"
+            echo ""
+            echo "$log"
+            echo ""
+            echo "## Requirements"
+            echo ""
+            echo "- PHP 7.4+"
+            echo "- WordPress 6.0+"
+            echo "- MySQL 5.7+ / MariaDB 10.3+"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body: ${{ steps.changelog.outputs.body }}
+          files: |
+            ${{ steps.zip.outputs.path }}
+            ${{ steps.zip.outputs.checksum }}
+          fail_on_unmatched_files: true
+          make_latest: true

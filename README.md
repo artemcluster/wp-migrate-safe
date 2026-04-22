@@ -1,5 +1,10 @@
 # WP Migrate Safe
 
+[![CI](https://github.com/artemcluster/wp-migrate-safe/actions/workflows/ci.yml/badge.svg)](https://github.com/artemcluster/wp-migrate-safe/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/artemcluster/wp-migrate-safe?color=blue)](https://github.com/artemcluster/wp-migrate-safe/releases/latest)
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-brightgreen)](./LICENSE)
+[![PHP](https://img.shields.io/badge/php-7.4%20%7C%208.0%20%7C%208.1%20%7C%208.2%20%7C%208.3-blue)](./composer.json)
+
 **Reliable WordPress backup & restore — no file-size limits, automatic database-prefix rewriting, honest error messages.**
 
 WP Migrate Safe exports and restores complete WordPress sites using the `.wpress` archive format. It's an independent open-source tool aimed at solving the pain points that plague other migration plugins: silent hangs, upload size limits, opaque failures, and broken imports across different database prefixes.
@@ -16,7 +21,7 @@ WP Migrate Safe exports and restores complete WordPress sites using the `.wpress
 
 **Author:** Artem Pronin
 **License:** [GPL-3.0-or-later](./LICENSE)
-**Status:** Alpha (v0.1.0) — functional, tests passing, not yet WP.org-reviewed
+**Version:** 0.1.0 — first iteration. Export, import, chunked upload, DB prefix rewriting, serialize-aware search-replace, WP-CLI — all covered by 169 passing tests. Multisite, scheduled backups, and cloud storage land in later iterations (see roadmap).
 
 ---
 
