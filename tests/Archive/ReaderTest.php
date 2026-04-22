@@ -178,6 +178,67 @@ final class ReaderTest extends TestCase
         new Reader($this->dir . '/does-not-exist.wpress');
     }
 
+    public function testZeroByteFileEntry(): void
+    {
+        // Entry with size=0 must still produce an empty extracted file.
+        $archive = $this->buildArchive([
+            ['name' => 'placeholder', 'prefix' => '', 'content' => ''],
+        ]);
+
+        $dest = $this->dir . '/extract';
+        mkdir($dest, 0755, true);
+
+        $reader = new Reader($archive);
+        $count = $reader->extractAll($dest);
+
+        $this->assertSame(1, $count);
+        $this->assertFileExists($dest . '/placeholder');
+        $this->assertSame(0, filesize($dest . '/placeholder'));
+    }
+
+    public function testListFilesOnCompletelyEmptyFileReturnsNothing(): void
+    {
+        $archive = $this->dir . '/zero-bytes.wpress';
+        file_put_contents($archive, '');
+
+        $reader = new Reader($archive);
+        // A 0-byte file has no EOF block and no entries; listFiles should terminate cleanly.
+        $this->assertSame([], iterator_to_array($reader->listFiles()));
+        $this->assertFalse($reader->isValid());
+    }
+
+    public function testCorruptedHeaderRaisesException(): void
+    {
+        // Header block whose size field is non-numeric garbage.
+        $archive = $this->dir . '/corrupt.wpress';
+        $handle = fopen($archive, 'wb');
+        fwrite($handle, pack('a255a14a12a4088a8', 'x.txt', 'NOT-A-NUMBER', '0', '', ''));
+        fwrite($handle, str_repeat('x', 10));
+        fwrite($handle, str_repeat("\0", 4377));
+        fclose($handle);
+
+        $reader = new Reader($archive);
+        $this->expectException(CorruptedArchiveException::class);
+        iterator_to_array($reader->listFiles());
+    }
+
+    public function testArchiveWithTwoFilesExtractionOrderMatchesListing(): void
+    {
+        $archive = $this->buildArchive([
+            ['name' => 'first.txt', 'prefix' => '', 'content' => 'first content'],
+            ['name' => 'second.txt', 'prefix' => 'sub', 'content' => 'second content'],
+        ]);
+
+        $dest = $this->dir . '/out';
+        mkdir($dest, 0755, true);
+
+        $reader = new Reader($archive);
+        $reader->extractAll($dest);
+
+        $this->assertSame('first content', file_get_contents($dest . '/first.txt'));
+        $this->assertSame('second content', file_get_contents($dest . '/sub/second.txt'));
+    }
+
     // ----------------- helpers -----------------
 
     /**
