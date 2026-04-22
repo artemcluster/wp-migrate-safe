@@ -20,6 +20,16 @@ final class ExportController
 
     public function start(WP_REST_Request $request)
     {
+        try {
+            \WpMigrateSafe\Concurrency\GlobalLock::acquire('pending-' . bin2hex(random_bytes(8)));
+        } catch (\WpMigrateSafe\Concurrency\Exception\LockHeldException $e) {
+            return \WpMigrateSafe\Errors\ErrorResponse::fromCode(
+                'GLOBAL_LOCK_HELD',
+                409,
+                ['holder_job_id' => $e->holderJobId()]
+            );
+        }
+
         $filename = $this->generateFilename();
         $archivePath = Paths::backupsDir() . '/' . $filename;
 
@@ -29,6 +39,7 @@ final class ExportController
         ]);
 
         $this->jobStore()->save($job);
+        \WpMigrateSafe\Concurrency\GlobalLock::acquire($job->id());
 
         return new WP_REST_Response([
             'job_id' => $job->id(),
@@ -60,6 +71,10 @@ final class ExportController
         $context = new ExportContext($archivePath, ABSPATH, WP_CONTENT_DIR);
         $job = ExportJob::runSlice($job, $context, self::STEP_BUDGET_SECONDS);
         $store->save($job);
+
+        if (\WpMigrateSafe\Job\JobStatus::isTerminal($job->status())) {
+            \WpMigrateSafe\Concurrency\GlobalLock::release($job->id());
+        }
 
         return new WP_REST_Response($job->toArray(), 200);
     }

@@ -58,6 +58,16 @@ final class ImportController
             return new WP_Error('wpms_not_found', 'Archive not found.', ['status' => 404]);
         }
 
+        try {
+            \WpMigrateSafe\Concurrency\GlobalLock::acquire('pending-' . bin2hex(random_bytes(8)));
+        } catch (\WpMigrateSafe\Concurrency\Exception\LockHeldException $e) {
+            return \WpMigrateSafe\Errors\ErrorResponse::fromCode(
+                'GLOBAL_LOCK_HELD',
+                409,
+                ['holder_job_id' => $e->holderJobId()]
+            );
+        }
+
         $job = Job::newImport([
             'archive_path' => $archivePath,
             'filename' => $filename,
@@ -67,6 +77,7 @@ final class ImportController
         ]);
 
         $this->jobStore()->save($job);
+        \WpMigrateSafe\Concurrency\GlobalLock::acquire($job->id());
 
         return new WP_REST_Response([
             'job_id' => $job->id(),
@@ -93,6 +104,10 @@ final class ImportController
 
         $job = ImportJob::runSlice($job, $context, self::STEP_BUDGET_SECONDS);
         $store->save($job);
+
+        if (\WpMigrateSafe\Job\JobStatus::isTerminal($job->status())) {
+            \WpMigrateSafe\Concurrency\GlobalLock::release($job->id());
+        }
 
         return new WP_REST_Response($job->toArray(), 200);
     }
