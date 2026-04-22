@@ -6,13 +6,13 @@ namespace WpMigrateSafe\Rest;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
+use WpMigrateSafe\Import\ArchiveInspector;
 use WpMigrateSafe\Import\DryRun\ArchiveValidityCheck;
 use WpMigrateSafe\Import\DryRun\DiskSpaceCheck;
 use WpMigrateSafe\Import\DryRun\DryRunReport;
 use WpMigrateSafe\Import\DryRun\MySqlVersionCheck;
 use WpMigrateSafe\Import\ImportContext;
 use WpMigrateSafe\Import\ImportJob;
-use WpMigrateSafe\Import\Snapshot\SnapshotStore;
 use WpMigrateSafe\Job\Job;
 use WpMigrateSafe\Job\JobStatus;
 use WpMigrateSafe\Job\JobStore;
@@ -48,6 +48,29 @@ final class ImportController
         return new WP_REST_Response($report->toArray(), 200);
     }
 
+    /**
+     * GET /import/inspect?filename=xxx.wpress
+     * Returns detected source URLs from the archive (metadata.json fast path + SQL dump fallback).
+     */
+    public function inspect(WP_REST_Request $request)
+    {
+        $req = new Request($request);
+        $filename = basename($req->getString('filename'));
+        $archivePath = Paths::backupsDir() . '/' . $filename;
+
+        if ($filename === '' || !is_file($archivePath)) {
+            return new WP_Error('wpms_not_found', 'Archive not found.', ['status' => 404]);
+        }
+
+        try {
+            $detected = (new ArchiveInspector())->inspect($archivePath);
+        } catch (\Throwable $e) {
+            return new WP_REST_Response(['source_url' => '', 'home_url' => '', 'error' => $e->getMessage()], 200);
+        }
+
+        return new WP_REST_Response($detected, 200);
+    }
+
     public function start(WP_REST_Request $request)
     {
         $req = new Request($request);
@@ -58,14 +81,14 @@ final class ImportController
             return new WP_Error('wpms_not_found', 'Archive not found.', ['status' => 404]);
         }
 
+        // Detect source DB prefix so ImportDatabase can rewrite table identifiers
+        // to match the target site's prefix. Without this, a wpsp_ archive can't be
+        // imported into a wp_ site and vice versa.
+        $detected = [];
         try {
-            \WpMigrateSafe\Concurrency\GlobalLock::acquire('pending-' . bin2hex(random_bytes(8)));
-        } catch (\WpMigrateSafe\Concurrency\Exception\LockHeldException $e) {
-            return \WpMigrateSafe\Errors\ErrorResponse::fromCode(
-                'GLOBAL_LOCK_HELD',
-                409,
-                ['holder_job_id' => $e->holderJobId()]
-            );
+            $detected = (new ArchiveInspector())->inspect($archivePath);
+        } catch (\Throwable $e) {
+            // Non-fatal — fall back to assuming prefix matches.
         }
 
         $job = Job::newImport([
@@ -73,11 +96,25 @@ final class ImportController
             'filename' => $filename,
             'old_url' => $req->getString('old_url'),
             'new_url' => $req->getString('new_url', home_url()),
+            'source_prefix' => (string) ($detected['source_prefix'] ?? ''),
             'extract_dir' => Paths::backupsDir() . '/_extract_' . bin2hex(random_bytes(8)),
         ]);
 
-        $this->jobStore()->save($job);
-        \WpMigrateSafe\Concurrency\GlobalLock::acquire($job->id());
+        $store = $this->jobStore();
+        $store->save($job);
+
+        \WpMigrateSafe\Concurrency\ZombieLock::release($store);
+
+        try {
+            \WpMigrateSafe\Concurrency\GlobalLock::acquire($job->id());
+        } catch (\WpMigrateSafe\Concurrency\Exception\LockHeldException $e) {
+            $store->delete($job->id());
+            return \WpMigrateSafe\Errors\ErrorResponse::fromCode(
+                'GLOBAL_LOCK_HELD',
+                409,
+                ['holder_job_id' => $e->holderJobId()]
+            );
+        }
 
         return new WP_REST_Response([
             'job_id' => $job->id(),
@@ -132,22 +169,30 @@ final class ImportController
             $store = $this->jobStore();
             $job = $store->load($req->getString('job_id'));
             if (!JobStatus::isTerminal($job->status())) {
-                // If we have a snapshot, run rollback.
-                $snapshotId = (string) ($job->meta()['snapshot_id'] ?? '');
-                if ($snapshotId !== '') {
-                    $context = $this->contextFromJob($job);
-                    $snapshot = $context->snapshotStore()->load($snapshotId);
-                    (new \WpMigrateSafe\Rollback\RollbackExecutor($context->wpContentDir()))->execute($snapshot);
-                }
                 $job = $job->withStatus(JobStatus::ABORTED);
                 $store->save($job);
+                \WpMigrateSafe\Concurrency\GlobalLock::release($job->id());
+            }
+            // Best-effort cleanup of extract tmp.
+            $extractDir = (string) ($job->meta()['extract_dir'] ?? '');
+            if ($extractDir !== '' && is_dir($extractDir) && strpos($extractDir, '_extract_') !== false) {
+                $this->rmTree($extractDir);
             }
             return new WP_REST_Response(['aborted' => true, 'job_id' => $job->id()], 200);
         } catch (JobNotFoundException $e) {
             return new WP_Error('wpms_job_not_found', $e->getMessage(), ['status' => 404]);
-        } catch (\Throwable $e) {
-            return new WP_Error('wpms_abort_failed', $e->getMessage(), ['status' => 500]);
         }
+    }
+
+    private function rmTree(string $dir): void
+    {
+        if (!is_dir($dir)) return;
+        foreach (scandir($dir) as $e) {
+            if ($e === '.' || $e === '..') continue;
+            $p = $dir . '/' . $e;
+            is_dir($p) ? $this->rmTree($p) : @unlink($p);
+        }
+        @rmdir($dir);
     }
 
     private function jobStore(): JobStore
@@ -165,7 +210,7 @@ final class ImportController
             (string) ($meta['extract_dir'] ?? Paths::backupsDir() . '/_extract_' . $job->id()),
             (string) ($meta['old_url'] ?? ''),
             (string) ($meta['new_url'] ?? home_url()),
-            new SnapshotStore(Paths::rollbackDir())
+            (string) ($meta['source_prefix'] ?? '')
         );
     }
 }

@@ -9,14 +9,14 @@
         const dropzone = document.getElementById('wpms-upload-dropzone');
         const input = document.getElementById('wpms-upload-input');
         const progress = document.getElementById('wpms-upload-progress');
+        if (!dropzone || !input || !progress) return;
+
         const fill = progress.querySelector('.wpms-progress-fill');
         const text = progress.querySelector('.wpms-progress-text');
         const detail = progress.querySelector('.wpms-progress-detail');
         const abortBtn = document.getElementById('wpms-upload-abort');
         const result = document.getElementById('wpms-upload-result');
         const errorBox = document.getElementById('wpms-upload-error');
-
-        if (!dropzone || !input) return;
 
         let currentUploadId = null;
         let cancelRequested = false;

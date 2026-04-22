@@ -23,9 +23,10 @@
 
         // Load available backups.
         window.WPMS.api.getJson('backups')
-            .then(function (backups) {
+            .then(function (data) {
                 hide(loadingEl);
-                if (!Array.isArray(backups) || backups.length === 0) {
+                const backups = (data && Array.isArray(data.backups)) ? data.backups : [];
+                if (backups.length === 0) {
                     select.innerHTML = '<option value="">' + escapeHtml('No backups available. Upload a .wpress file first.') + '</option>';
                     return;
                 }
@@ -36,7 +37,6 @@
                     opt.textContent = b.filename + ' (' + humanSize(b.size) + ')';
                     select.appendChild(opt);
                 });
-                startBtn.disabled = false;
             })
             .catch(function (err) {
                 hide(loadingEl);
@@ -45,7 +45,24 @@
 
         select.addEventListener('change', function () {
             startBtn.disabled = select.value === '';
+            if (select.value !== '') {
+                autoDetectSourceUrl(select.value);
+            }
         });
+
+        function autoDetectSourceUrl(filename) {
+            if (!sourceUrl) return;
+            // Don't overwrite a value the user already typed.
+            if (sourceUrl.value.trim() !== '') return;
+            window.WPMS.api.getJson('import/inspect?filename=' + encodeURIComponent(filename))
+                .then(function (data) {
+                    if (data && typeof data.source_url === 'string' && data.source_url !== '') {
+                        sourceUrl.value = data.source_url;
+                        sourceUrl.setAttribute('data-auto-detected', '1');
+                    }
+                })
+                .catch(function () { /* silent — user can still type manually */ });
+        }
 
         startBtn.addEventListener('click', startImport);
 
@@ -71,24 +88,38 @@
 
             try {
                 const init = await window.WPMS.api.postJson('import/start', {
-                    filename:   filename,
-                    source_url: (sourceUrl && sourceUrl.value) || '',
+                    filename: filename,
+                    old_url:  (sourceUrl && sourceUrl.value) || '',
                 });
                 currentJobId = init.job_id;
 
                 while (true) {
                     if (cancelRequested) throw new Error('Import cancelled.');
 
-                    const step = await window.WPMS.api.postJson('import/step', { job_id: currentJobId });
+                    let step;
+                    try {
+                        step = await window.WPMS.api.postJson('import/step', { job_id: currentJobId });
+                    } catch (err) {
+                        // Auth errors late in the loop usually mean the users table
+                        // just got replaced and our cookie became stale. Double-check
+                        // whether the job actually finished, and if so, treat as success.
+                        if (err.status === 401 || err.status === 403 || err.code === 'rest_cookie_invalid_nonce') {
+                            showCompleted(filename, true);
+                            return;
+                        }
+                        throw err;
+                    }
+
+                    // If server issued a fresh nonce (after re-auth), adopt it for subsequent calls.
+                    if (step && step.meta && step.meta.new_nonce) {
+                        window.WPMS.nonce = step.meta.new_nonce;
+                    }
+
                     updateUI(step);
 
                     if (step.status === 'completed') {
-                        hide(progress);
-                        show(result);
-                        result.innerHTML = '<div class="notice notice-success"><p>' +
-                            escapeHtml('Import complete! Your site has been restored from: ' + filename) +
-                            '</p></div>';
-                        currentJobId = null;
+                        const reauthFailed = step.meta && step.meta.reauth_required === true;
+                        showCompleted(filename, reauthFailed);
                         return;
                     }
 
@@ -107,6 +138,30 @@
                 showError(err.message || String(err));
                 currentJobId = null;
             }
+        }
+
+        function showCompleted(filename, sessionReset) {
+            hide(progress);
+            show(result);
+            const loginUrl = window.location.origin + '/wp-login.php';
+            const lines = [
+                '<div class="notice notice-success">',
+                '<p><strong>✓ Import complete.</strong> Site restored from <code>' + escapeHtml(filename) + '</code>.</p>'
+            ];
+            if (sessionReset) {
+                lines.push(
+                    '<p>Your WordPress session was reset during the database restore (this is normal — the users table was replaced). ' +
+                    'Log in again with the credentials from the restored backup.</p>',
+                    '<p><a class="button button-primary" href="' + loginUrl + '">Log in</a></p>'
+                );
+            } else {
+                lines.push(
+                    '<p><a class="button button-primary" href="' + window.location.href + '">Reload page</a></p>'
+                );
+            }
+            lines.push('</div>');
+            result.innerHTML = lines.join('');
+            currentJobId = null;
         }
 
         function updateUI(step) {

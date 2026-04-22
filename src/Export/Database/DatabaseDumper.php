@@ -76,11 +76,16 @@ final class DatabaseDumper
     private function listTables(\wpdb $wpdb): array
     {
         $prefix = $wpdb->prefix;
-        // All tables with the WP prefix (core + custom plugin tables).
-        $like = str_replace('_', '\_', $prefix) . '%';
-        $rows = $wpdb->get_col($wpdb->prepare('SHOW TABLES LIKE %s', $like));
-        sort($rows);
-        return $rows ?: [];
+        // SHOW TABLES returns all tables; PHP-side filter for exact prefix match.
+        // Using LIKE with escaped underscore is unreliable across MySQL setups
+        // (sql_mode, NO_BACKSLASH_ESCAPES, wpdb->prepare behaviour), so we
+        // filter in PHP to guarantee we ONLY take rows that start with $prefix.
+        $rows = $wpdb->get_col('SHOW TABLES');
+        $filtered = array_filter((array) $rows, static function ($table) use ($prefix) {
+            return is_string($table) && strpos($table, $prefix) === 0;
+        });
+        sort($filtered);
+        return array_values($filtered);
     }
 
     /**

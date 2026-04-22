@@ -3,8 +3,6 @@ declare(strict_types=1);
 
 namespace WpMigrateSafe\Import;
 
-use WpMigrateSafe\Import\Snapshot\SnapshotStore;
-
 /**
  * Context shared across import steps within a single HTTP request.
  *
@@ -18,7 +16,7 @@ final class ImportContext
     private string $extractDir;
     private string $oldUrl;
     private string $newUrl;
-    private SnapshotStore $snapshotStore;
+    private string $sourcePrefix;
 
     public function __construct(
         string $archivePath,
@@ -27,7 +25,7 @@ final class ImportContext
         string $extractDir,
         string $oldUrl,
         string $newUrl,
-        SnapshotStore $snapshotStore
+        string $sourcePrefix = ''
     ) {
         $this->archivePath = $archivePath;
         $this->wpRoot = rtrim($wpRoot, '/\\');
@@ -35,7 +33,7 @@ final class ImportContext
         $this->extractDir = rtrim($extractDir, '/\\');
         $this->oldUrl = $oldUrl;
         $this->newUrl = $newUrl;
-        $this->snapshotStore = $snapshotStore;
+        $this->sourcePrefix = $sourcePrefix;
     }
 
     public function archivePath(): string { return $this->archivePath; }
@@ -44,5 +42,5 @@ final class ImportContext
     public function extractDir(): string { return $this->extractDir; }
     public function oldUrl(): string { return $this->oldUrl; }
     public function newUrl(): string { return $this->newUrl; }
-    public function snapshotStore(): SnapshotStore { return $this->snapshotStore; }
+    public function sourcePrefix(): string { return $this->sourcePrefix; }
 }

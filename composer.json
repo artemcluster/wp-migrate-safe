@@ -1,8 +1,28 @@
 {
-    "name": "artempronin/wp-migrate-safe",
-    "description": "Reliable WordPress backup/restore plugin with .wpress format support",
+    "name": "artemcluster/wp-migrate-safe",
+    "description": "Reliable WordPress backup & restore in the .wpress format, with chunked upload, automatic DB prefix rewriting, and typed error messages.",
     "type": "wordpress-plugin",
     "license": "GPL-3.0-or-later",
+    "keywords": [
+        "wordpress",
+        "wordpress-plugin",
+        "backup",
+        "restore",
+        "migration",
+        "wpress"
+    ],
+    "homepage": "https://github.com/artemcluster/wp-migrate-safe",
+    "authors": [
+        {
+            "name": "Artem Pronin",
+            "homepage": "https://github.com/artemcluster",
+            "role": "Developer"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/artemcluster/wp-migrate-safe/issues",
+        "source": "https://github.com/artemcluster/wp-migrate-safe"
+    },
     "require": {
         "php": ">=7.4"
     },

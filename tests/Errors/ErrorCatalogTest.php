@@ -16,7 +16,7 @@ final class ErrorCatalogTest extends TestCase
             'DB_IMPORT_SYNTAX', 'DB_CONNECTION_LOST', 'DB_ROW_TOO_LARGE',
             'FS_PERMISSION', 'UPLOAD_CHUNK_HASH',
             'STEP_TIMEOUT', 'JOB_HEARTBEAT_LOST',
-            'ROLLBACK_FAILED', 'IMPORT_FAILED_ROLLED_BACK', 'IMPORT_FAILED',
+            'IMPORT_FAILED',
             'GLOBAL_LOCK_HELD',
         ];
         foreach ($expected as $code) {

@@ -54,15 +54,6 @@ final class Paths
         return $dir;
     }
 
-    /**
-     * Directory for rollback snapshots (used by Plan 5).
-     */
-    public static function rollbackDir(): string
-    {
-        $dir = self::backupsDir() . '/_rollback';
-        self::ensureDir($dir);
-        return $dir;
-    }
 
     /**
      * Return available free bytes in the backups dir's filesystem, or null if not determinable.

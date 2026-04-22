@@ -9,12 +9,10 @@ use WpMigrateSafe\Export\ExportContext;
 use WpMigrateSafe\Export\ExportJob;
 use WpMigrateSafe\Import\ImportContext;
 use WpMigrateSafe\Import\ImportJob;
-use WpMigrateSafe\Import\Snapshot\SnapshotStore;
 use WpMigrateSafe\Job\Job;
 use WpMigrateSafe\Job\JobStatus;
 use WpMigrateSafe\Job\JobStore;
 use WpMigrateSafe\Plugin\Paths;
-use WpMigrateSafe\Rollback\RollbackExecutor;
 
 /**
  * WP-CLI commands for wp-migrate-safe.
@@ -112,10 +110,18 @@ class Wpms_Cli_Command extends WP_CLI_Command
         $oldUrl = (string) ($assoc_args['old-url'] ?? '');
         $newUrl = (string) ($assoc_args['new-url'] ?? home_url());
 
+        // Detect source prefix from archive metadata / SQL dump.
+        $sourcePrefix = '';
+        try {
+            $inspect = (new \WpMigrateSafe\Import\ArchiveInspector())->inspect($archive);
+            $sourcePrefix = (string) ($inspect['source_prefix'] ?? '');
+        } catch (\Throwable $e) { /* non-fatal */ }
+
         $job = Job::newImport([
             'archive_path' => $archive,
             'old_url' => $oldUrl,
             'new_url' => $newUrl,
+            'source_prefix' => $sourcePrefix,
             'extract_dir' => Paths::backupsDir() . '/_extract_' . bin2hex(random_bytes(8)),
         ]);
         $store = $this->jobStore();
@@ -125,7 +131,7 @@ class Wpms_Cli_Command extends WP_CLI_Command
             $archive, ABSPATH, WP_CONTENT_DIR,
             (string) $job->meta()['extract_dir'],
             $oldUrl, $newUrl,
-            new SnapshotStore(Paths::rollbackDir())
+            $sourcePrefix
         );
 
         WP_CLI::log('Starting import of ' . basename($archive));
@@ -194,48 +200,6 @@ class Wpms_Cli_Command extends WP_CLI_Command
         }
 
         WP_CLI::log(json_encode($job->toArray(), JSON_PRETTY_PRINT));
-    }
-
-    /**
-     * Rollback the site to the state of a snapshot.
-     *
-     * ## OPTIONS
-     *
-     * [<snapshot_id>]
-     * : Snapshot ID to restore. If omitted, lists available snapshots.
-     *
-     * @param array<int, string> $args
-     * @param array<string, string> $assoc_args
-     */
-    public function rollback(array $args, array $assoc_args): void
-    {
-        $store = new SnapshotStore(Paths::rollbackDir());
-
-        if (empty($args)) {
-            $snapshots = $store->findAll();
-            if (empty($snapshots)) {
-                WP_CLI::log('No snapshots available.');
-                return;
-            }
-            foreach ($snapshots as $s) {
-                WP_CLI::log(sprintf('%s  created=%s  status=%s',
-                    $s->id(),
-                    gmdate('Y-m-d H:i', $s->createdAt()),
-                    $s->status()
-                ));
-            }
-            return;
-        }
-
-        $snapshot = $store->load((string) $args[0]);
-        WP_CLI::confirm('This will RESTORE the site to snapshot ' . $snapshot->id() . '. Continue?', $assoc_args);
-
-        try {
-            (new RollbackExecutor(WP_CONTENT_DIR))->execute($snapshot);
-            WP_CLI::success('Rollback complete.');
-        } catch (\WpMigrateSafe\Rollback\Exception\RollbackFailedException $e) {
-            WP_CLI::error('Rollback failed: ' . $e->getMessage() . "\nManual steps:\n - " . implode("\n - ", $e->manualSteps()));
-        }
     }
 
     /**

@@ -8,10 +8,11 @@ use WpMigrateSafe\Import\ImportStep;
 use WpMigrateSafe\Job\StepResult;
 
 /**
- * Move extracted `wp-content/{plugins,themes,uploads}` trees into their real locations.
+ * Replace wp-content/{plugins,themes,uploads} with the freshly-extracted content.
  *
- * The snapshot step already renamed the originals aside to `*.rollback.{id}`, so
- * the target paths are free and we can rename our extracted dirs into place.
+ * No snapshot kept — user accepted this import will overwrite current site.
+ * If the process crashes between rmTree and rename, the site will be broken;
+ * the user can re-run the import from the same archive.
  */
 final class RestoreContent implements ImportStep
 {
@@ -28,15 +29,28 @@ final class RestoreContent implements ImportStep
             if (!is_dir($from)) continue;
 
             if (is_dir($to)) {
-                // Defensive: move out of the way if it reappeared somehow.
-                $aside = $to . '.obsolete.' . time();
-                rename($to, $aside);
+                $this->rmTree($to);
             }
             if (!rename($from, $to)) {
-                throw new \RuntimeException(sprintf('Could not rename %s to %s', $from, $to));
+                throw new \RuntimeException(sprintf('Could not move %s to %s', $from, $to));
             }
         }
 
         return StepResult::complete(100, 'Content restored.');
+    }
+
+    private function rmTree(string $dir): void
+    {
+        if (!is_dir($dir)) return;
+        foreach (scandir($dir) as $e) {
+            if ($e === '.' || $e === '..') continue;
+            $p = $dir . '/' . $e;
+            if (is_dir($p) && !is_link($p)) {
+                $this->rmTree($p);
+            } else {
+                @unlink($p);
+            }
+        }
+        @rmdir($dir);
     }
 }
