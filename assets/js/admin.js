@@ -97,8 +97,9 @@
             const date = new Date(b.mtime * 1000).toLocaleString();
             const validity = b.is_valid ? '✅' : '⚠';
             const encoded = encodeURIComponent(b.filename);
-            const downloadUrl = window.WPMS.restUrl + 'backups/' + encoded + '/download' +
-                '?_wpnonce=' + encodeURIComponent(window.WPMS.nonce);
+            const downloadUrl = window.WPMS.restUrl + 'backups/download' +
+                '?filename=' + encoded +
+                '&_wpnonce=' + encodeURIComponent(window.WPMS.nonce);
             return (
                 '<tr>' +
                 '<td>' + escapeHtml(b.filename) + '</td>' +

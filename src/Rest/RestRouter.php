@@ -69,10 +69,11 @@ final class RestRouter
             'permission_callback' => [self::class, 'checkPermission'],
         ]);
 
-        register_rest_route($ns, '/backups/(?P<filename>[^/]+)/download', [
+        register_rest_route($ns, '/backups/download', [
             'methods'             => 'GET',
             'callback'            => [$backups, 'download'],
             'permission_callback' => [self::class, 'checkPermission'],
+            'args'                => ['filename' => ['type' => 'string', 'required' => true]],
         ]);
 
         $export = new ExportController();

@@ -60,10 +60,14 @@ final class BackupsController
      */
     public function download(WP_REST_Request $request)
     {
-        $filename = basename((string) $request['filename']);
+        // Filename comes via query string, not a path segment. Putting ".wpress" inside
+        // a REST route's path segment triggers server-side routing quirks on some hosts
+        // (nginx configs that block/misroute extensions, mod_security rules, etc.).
+        $rawFilename = (string) $request->get_param('filename');
+        $filename = basename($rawFilename);
         $path = Paths::backupsDir() . '/' . $filename;
 
-        if (!preg_match('/\.wpress$/i', $filename) || !is_file($path)) {
+        if ($filename === '' || !preg_match('/\.wpress$/i', $filename) || !is_file($path)) {
             return new WP_Error('wpms_not_found', 'Backup not found', ['status' => 404]);
         }
 
