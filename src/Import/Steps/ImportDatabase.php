@@ -26,6 +26,14 @@ final class ImportDatabase implements ImportStep
             throw new \RuntimeException('database/database.sql not found in extracted archive.');
         }
 
+        // Suspend integrity checks for the duration of this slice. MySQL rejects
+        // CREATE TABLE statements whose foreign keys reference tables not yet created
+        // (errno 150). Same with UNIQUE index deferrals and strict SQL modes that
+        // reject NO_AUTO_VALUE_ON_ZERO inserts. mysqldump and ai1wm both set these
+        // before an import. These are connection-scoped; each HTTP slice gets a
+        // fresh wpdb connection, so we re-apply on every slice entry.
+        $this->suspendIntegrityChecks($wpdb);
+
         $dropped = (bool) ($cursor['dropped_existing'] ?? false);
         if (!$dropped) {
             $this->dropExistingTables($wpdb);
@@ -50,6 +58,13 @@ final class ImportDatabase implements ImportStep
             if ($context->oldUrl() !== '') {
                 $rewritten = $urlRewriter->rewrite($rewritten);
             }
+            // 3) Drop bare SET statements from inside the dump — we manage the session
+            //    ourselves and dumps sometimes include `SET FOREIGN_KEY_CHECKS=1`
+            //    mid-stream, which would undo our suspension.
+            if ($this->isSessionSetStatement($rewritten)) {
+                $index++;
+                continue;
+            }
 
             $executor->execute($rewritten);
             $index++;
@@ -63,7 +78,47 @@ final class ImportDatabase implements ImportStep
             }
         }
 
+        $this->restoreIntegrityChecks($wpdb);
+
         return StepResult::complete(100, sprintf('Database imported (%d statements).', $index));
+    }
+
+    private function suspendIntegrityChecks(\wpdb $wpdb): void
+    {
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 0');
+        $wpdb->query('SET UNIQUE_CHECKS = 0');
+        $wpdb->query("SET SESSION sql_mode = 'NO_AUTO_VALUE_ON_ZERO'");
+        $wpdb->query('SET NAMES utf8mb4');
+    }
+
+    private function restoreIntegrityChecks(\wpdb $wpdb): void
+    {
+        $wpdb->query('SET FOREIGN_KEY_CHECKS = 1');
+        $wpdb->query('SET UNIQUE_CHECKS = 1');
+    }
+
+    /**
+     * SET session-variable statements that we already manage ourselves.
+     * Dumps sometimes intermix these; letting them run would re-enable FK checks
+     * and fail CREATE TABLE statements whose referenced tables haven't been
+     * created yet.
+     */
+    private function isSessionSetStatement(string $stmt): bool
+    {
+        $trimmed = ltrim($stmt);
+        if (stripos($trimmed, 'SET ') !== 0) return false;
+        $patterns = [
+            '/^SET\s+(@\w+\s*=\s*@@)?\s*FOREIGN_KEY_CHECKS\b/i',
+            '/^SET\s+(@\w+\s*=\s*@@)?\s*UNIQUE_CHECKS\b/i',
+            '/^SET\s+(SESSION\s+|@\w+\s*=\s*@@)?\s*sql_mode\b/i',
+            '/^SET\s+NAMES\b/i',
+            '/^SET\s+CHARACTER\s+SET\b/i',
+            '/^SET\s+time_zone\b/i',
+        ];
+        foreach ($patterns as $p) {
+            if (preg_match($p, $trimmed) === 1) return true;
+        }
+        return false;
     }
 
     private function dropExistingTables(\wpdb $wpdb): void
