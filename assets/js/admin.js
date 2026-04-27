@@ -119,7 +119,7 @@
                 const filename = decodeURIComponent(btn.dataset.filename);
                 if (!confirm('Delete ' + filename + '?')) return;
                 try {
-                    await window.WPMS.api.deleteJson('backups/' + encodeURIComponent(filename));
+                    await window.WPMS.api.deleteJson('backups/delete?filename=' + encodeURIComponent(filename));
                     await loadBackups(table);
                 } catch (err) {
                     alert('Delete failed: ' + err.message);

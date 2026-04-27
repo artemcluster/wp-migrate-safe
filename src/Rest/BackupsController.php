@@ -37,11 +37,14 @@ final class BackupsController
 
     public function delete(WP_REST_Request $request)
     {
-        $filename = basename((string) $request['filename']);
+        // Filename via query string — see download() for why path segments with
+        // .wpress trigger server-side routing quirks.
+        $rawFilename = (string) $request->get_param('filename');
+        $filename = basename($rawFilename);
         $path = Paths::backupsDir() . '/' . $filename;
 
         // Refuse paths that escape the backups dir.
-        if (!preg_match('/\.wpress$/i', $filename) || !is_file($path)) {
+        if ($filename === '' || !preg_match('/\.wpress$/i', $filename) || !is_file($path)) {
             return new WP_Error('wpms_not_found', 'Backup not found', ['status' => 404]);
         }
 

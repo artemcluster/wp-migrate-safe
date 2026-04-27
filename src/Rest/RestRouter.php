@@ -63,10 +63,11 @@ final class RestRouter
             'permission_callback' => [self::class, 'checkPermission'],
         ]);
 
-        register_rest_route($ns, '/backups/(?P<filename>[^/]+)', [
+        register_rest_route($ns, '/backups/delete', [
             'methods'             => 'DELETE',
             'callback'            => [$backups, 'delete'],
             'permission_callback' => [self::class, 'checkPermission'],
+            'args'                => ['filename' => ['type' => 'string', 'required' => true]],
         ]);
 
         register_rest_route($ns, '/backups/download', [
