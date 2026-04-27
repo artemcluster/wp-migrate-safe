@@ -4,6 +4,42 @@ When something goes wrong, the plugin reports a specific error code. Use this pa
 
 ---
 
+## Behind Cloudflare or other reverse proxy: large download fails
+
+**Symptoms:** Downloading a backup from the Backups tab fails with "Failed - Unknown server error" in the browser, especially for files over ~50 MB.
+
+**Cause:** Cloudflare's free plan terminates origin connections after 100 seconds (HTTP 524). PHP-streamed downloads of large files often exceed that on slow uplinks.
+
+**Fix, in order of preference:**
+
+1. **Install `mod_xsendfile`** (Apache hosts).
+   With it enabled, the plugin asks Apache to stream the file directly, bypassing PHP entirely. No code change needed — the plugin auto-detects the module.
+
+2. **Configure nginx X-Accel-Redirect** (nginx hosts that have shell access).
+   Add an internal location to your nginx config:
+   ```nginx
+   location ^~ /wpms-protected/ {
+       internal;
+       alias /var/www/your-site/wp-content/backups/wp-migrate-safe/;
+   }
+   ```
+   Then in `wp-config.php`:
+   ```php
+   define('WPMS_NGINX_INTERNAL_LOCATION', '/wpms-protected');
+   ```
+
+3. **Bypass Cloudflare for the download URL** (no server changes).
+   In Cloudflare → Rules → Page Rules, add:
+   - URL: `*example.com/wp-json/wp-migrate-safe/v1/backups/download*`
+   - Setting: **Cache Level → Bypass**
+   This keeps Cloudflare's edge from buffering the response, removing the 100-second cap.
+
+4. **Use SSH/SFTP/cPanel** to copy the file out of `wp-content/backups/wp-migrate-safe/` directly. The file's already there — the download endpoint is just a convenience.
+
+5. **WP-CLI export to a custom path:** `wp migrate-safe export --output=/tmp/site.wpress`, then SCP it out.
+
+---
+
 ## DISK_FULL
 
 **What happened:** The server does not have enough free disk space to perform the requested operation.
