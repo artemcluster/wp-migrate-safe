@@ -90,7 +90,11 @@
         const tbody = table.querySelector('tbody');
         const data = await window.WPMS.api.getJson('backups');
         if (!data.backups.length) {
-            tbody.innerHTML = '<tr><td colspan="5">' + 'No backups yet.' + '</td></tr>';
+            const dir = data.directory || '(unknown)';
+            tbody.innerHTML = '<tr><td colspan="5">' +
+                'No backups found in <code>' + escapeHtml(dir) + '</code>. ' +
+                'Create one in the <strong>Export</strong> tab, or upload a <code>.wpress</code> file in the <strong>Upload</strong> tab.' +
+                '</td></tr>';
             return;
         }
         tbody.innerHTML = data.backups.map(function (b) {
